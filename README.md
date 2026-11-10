@@ -6,25 +6,42 @@
 
 八个维度：伤害占比、伤害转化、经济每分、补刀每分、参团率、视野每分、KDA、承伤占比。每一维都和**同位置**的所有玩家比，50 = 中位数。
 
-## 模式
+## 模式 × 队列
+
+出什么图由两件事决定，两者自由组合：
+
+- `--mode`：图怎么排
+- `--queue`：和谁比，也就是取哪个队列的对局、比较池用哪个队列的人
 
 | 模式 | 用途 | 中间那块显示 |
 |---|---|---|
-| `duel` | 两人同位置近期对比（只给一个人就是个人雷达） | 常用英雄 |
-| `match` | 某一局里同位置两人的本场发挥 | 英雄 / 召唤师技能 / 符文 / 装备 / 饰品 |
+| `duel` | 1–2 人近期对比（只给一个人就是个人雷达） | 常用英雄 |
+| `match` | 某一局里同位置两人的本场发挥（队列按那一局自己的） | 英雄 / 召唤师技能 / 符文 / 装备 / 饰品 |
 | `champ` | 只比同一个英雄的对局 | 该英雄的局数和胜率 |
 | `overall` | 整体实力：五个位置分别算，再按局数加权 | 上野中下辅五格评分 |
 | `team` | 5v5 全队战力（库里的对局，或读客户端实时对局） | 每路一行 |
-| `aram` | 大乱斗（`--aram-queue aram`）或海克斯乱斗（`kiwi`），1–2 人，和同模式的人比。K/D/A、常用英雄、近 10 局也只算这个模式 | 常用英雄 |
+| `aram` | `duel` + 乱斗队列的简写 | 常用英雄 |
+
+| 队列 | 对局 | 比较池 |
+|---|---|---|
+| `rift`（默认） | 峡谷全部分路局 | 同位置 |
+| `solo` | 单双排（420） | 单双排同位置 |
+| `flex` | 灵活排位（440） | 灵活排位同位置 |
+| `ranked` | 单双排 + 灵活 | 排位同位置 |
+| `normal` | 匹配（400 / 430 / 480 / 490） | 匹配同位置 |
+| `aram` | 普通大乱斗（450） | 大乱斗全体，不分位置 |
+| `kiwi` | 海克斯乱斗（2400） | 海克斯乱斗全体，不分位置 |
+
+乱斗没有分路，所以 `overall` 和 `team` 不能配乱斗队列，乱斗也不能指定 `--position`。K/D/A、常用英雄、近 10 局都只算所选队列。比较池少于 200 人时，图右上角会标「比较池小 · 仅供参考」。
 
 ```bash
-python3 lol_radar.py --players "Player#1234" "Rival#5678" --position ADC
+python3 lol_radar.py --players "Player#1234" "Rival#5678" --position ADC              # 峡谷下路对比
+python3 lol_radar.py --players "Player#1234" "Rival#5678" --queue ranked             # 排位对比
+python3 lol_radar.py --players "Player#1234" "Rival#5678" --queue kiwi               # 海克斯乱斗对比
+python3 lol_radar.py --mode champ --champion 伊泽瑞尔 --players "Player#1234" --queue solo
+python3 lol_radar.py --mode overall --players "Player#1234" --days 90 --queue ranked
 python3 lol_radar.py --mode match --match-id HN1_1234567890 --players "Player#1234"
-python3 lol_radar.py --mode champ --champion 伊泽瑞尔 --players "Player#1234"
-python3 lol_radar.py --mode overall --players "Player#1234" --days 90
 python3 lol_radar.py --mode team --match-id HN1_1234567891
-python3 lol_radar.py --mode aram --players "Player#1234"
-python3 lol_radar.py --mode aram --aram-queue kiwi --players "Player#1234" "Rival#5678"   # 海克斯乱斗两人对比
 ```
 
 `python3 lol_radar.py --help` 看全部参数。脚本最后一行会打印一行 JSON 摘要（各人各维的分位），方便别的程序接着用。

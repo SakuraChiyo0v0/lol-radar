@@ -24,6 +24,7 @@ import json
 import re
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -94,13 +95,38 @@ with t as (
   from lol.match_participant mp
   join lol.match m on m.match_id = mp.match_id
   where m.game_creation > now() - interval '{days} days' and mp.time_played > 300
-    and mp.team_position in ('TOP','JUNGLE','MIDDLE','BOTTOM','UTILITY')
+    and mp.team_position in ('TOP','JUNGLE','MIDDLE','BOTTOM','UTILITY'){qf}
   window w as (partition by mp.match_id, mp.team_id)
 )
 """
 
 
 ARAM_QUEUES = {450: "ARAM", 2400: "KIWI"}
+SMALL_POOL = 200   # 比较池少于这么多人时，图上提示百分位不稳
+
+
+@dataclass(frozen=True)
+class Queue:
+    """「和谁比」：取哪些对局、比较池用哪些人。图怎么排由模板（--mode）决定，两者自由组合。"""
+    key: str            # 命令行取值
+    name: str           # 中文名，上图
+    ids: tuple = ()     # queue_id；空 = 不限队列（峡谷所有分路局）
+    laned: bool = True  # 有分路：比较池按位置分；没有分路（乱斗）：整个队列一个池
+    tag: str = ""       # 没有分路的队列在比较池里的键
+
+    def filter(self) -> str:
+        return f" and m.queue_id in ({', '.join(str(int(i)) for i in self.ids)})" if self.ids else ""
+
+
+QUEUES = {q.key: q for q in (
+    Queue("rift", "峡谷"),                                        # 默认：单双排 + 灵活 + 匹配，和原来一致
+    Queue("solo", "单双排", (420,)),
+    Queue("flex", "灵活排位", (440,)),
+    Queue("ranked", "排位", (420, 440)),
+    Queue("normal", "匹配", (400, 430, 480, 490)),
+    Queue("aram", "大乱斗", (450,), laned=False, tag="ARAM"),
+    Queue("kiwi", "海克斯乱斗", (2400,), laned=False, tag="KIWI"),
+)}
 ARAM_KEYS = ["dmg_share", "dmg_per_gold", "gold_per_min", "cs_per_min", "kp", "dmg_per_min", "kda", "tank_share"]
 ARAM_AXES = [("伤害占比", "dmg_share", "{:.1%}"), ("伤害转化", "dmg_per_gold", "{:.0f}"),
              ("经济/分", "gold_per_min", "{:.0f}"), ("补刀/分", "cs_per_min", "{:.1f}"),
@@ -163,18 +189,23 @@ CACHE_TTL = CFG.CACHE_TTL
 
 
 class Pool:
-    """同位置样本池：每个位置每个指标一列排好序的数，按 (days, pos) 落盘、12 小时有效。
+    """同位置样本池：每个位置每个指标一列排好序的数，按 (队列, days, pos) 落盘、12 小时有效。
 
+    默认队列 rift（峡谷全部分路局）的池子里还顺带建了 ARAM / KIWI 两个乱斗池，目录名沿用 d{days}，
+    和原来的缓存兼容；其余峡谷队列（solo / flex / ranked / normal）各自一个目录 {key}-d{days}，只含五个位置。
     只读用得到的位置；pct() 用二分取「严格小于」的个数，和原来逐个比较的定义一致。
     """
 
-    def __init__(self, days: int, refresh: bool = False):
+    def __init__(self, days: int, refresh: bool = False, queue: Queue | None = None):
         self.days = int(days)
         self.refresh = refresh
+        # 乱斗队列的池子本来就建在 rift 池里，按 tag 取
+        self.queue = queue if queue is not None and queue.laned else QUEUES["rift"]
         self._cols: dict[str, dict[str, "array"]] = {}
 
     def _dir(self) -> Path:
-        return POOL_DIR / f"d{self.days}"
+        k = self.queue.key
+        return POOL_DIR / (f"d{self.days}" if k == "rift" else f"{k}-d{self.days}")
 
     def _fresh(self) -> bool:
         import time
@@ -189,18 +220,20 @@ class Pool:
         """一条 SQL 出全部位置，每个位置每个指标排序后写成二进制 double 数组。"""
         import time
         from array import array
-        sql = BASE.format(days=self.days) + f"select pos, {AGG} from t group by puuid, pos"
+        sql = BASE.format(days=self.days, qf=self.queue.filter()) + f"select pos, {AGG} from t group by puuid, pos"
         cols: dict[str, list[list[float]]] = {}
         keys = [m[1] for m in METRICS]
         for r in psql(sql):
             c = cols.setdefault(r[0], [[] for _ in keys])
             for i, v in enumerate(r[1:]):
                 c[i].append(float(v))
-        tmp = POOL_DIR / f".d{self.days}.tmp{int(time.time())}"
+        name = self._dir().name
+        tmp = POOL_DIR / f".{name}.tmp{int(time.time())}"
         tmp.mkdir(parents=True, exist_ok=True)
 
-        # 乱斗系按队列分开建池：450=普通大乱斗(ARAM)，2400=海克斯/乱斗狂欢(KIWI)，两者数据不能混
-        for qid, tag in ARAM_QUEUES.items():
+        # 乱斗系按队列分开建池：450=普通大乱斗(ARAM)，2400=海克斯/乱斗狂欢(KIWI)，两者数据不能混。
+        # 只有默认的 rift 池顺带建，别的峡谷队列池不重复建
+        for qid, tag in (ARAM_QUEUES.items() if self.queue.key == "rift" else ()):
             sql_a = BASE_ARAM.format(days=self.days, queue=qid, pos=tag) + f"select pos, {AGG_ARAM} from t group by puuid, pos"
             arr = [[] for _ in ARAM_KEYS]
             for r in psql(sql_a):
@@ -215,11 +248,11 @@ class Pool:
                 vals.sort()
                 with open(tmp / f"{pos}.{k}.f64", "wb") as fh:
                     array("d", vals).tofile(fh)
-        (tmp / "meta.json").write_text(json.dumps({"ts": time.time(), "days": self.days,
+        (tmp / "meta.json").write_text(json.dumps({"ts": time.time(), "days": self.days, "queue": self.queue.key,
                                                    "counts": {p: len(v[0]) for p, v in cols.items()}}))
         # 原子换目录：别的进程正在读旧目录也不会读到半份
         dst = self._dir()
-        old = POOL_DIR / f".d{self.days}.old{int(time.time())}"
+        old = POOL_DIR / f".{name}.old{int(time.time())}"
         if dst.exists():
             dst.rename(old)
         tmp.rename(dst)
@@ -288,8 +321,17 @@ class Pool:
 import shutil  # noqa: E402  Pool._build 用
 
 
-def pool(days: int, refresh: bool = False) -> Pool:
-    return Pool(days, refresh)
+def pool(days: int, refresh: bool = False, queue: Queue | None = None) -> Pool:
+    return Pool(days, refresh, queue)
+
+
+def pool_key(q: Queue, pos: str) -> str:
+    """比较池里的键：有分路的队列按位置，乱斗按队列 tag。"""
+    return pos if q.laned else q.tag
+
+
+def keys_of(q: Queue) -> list[str]:
+    return [m[1] for m in METRICS] if q.laned else ARAM_KEYS
 
 
 def resolve(name: str) -> str:
@@ -306,16 +348,16 @@ def resolve(name: str) -> str:
 
 
 def player_row(name: str, days: int, games: int, position: str | None,
-               champion: str | None = None, puuid: str | None = None, aram: bool | str = False) -> dict:
-    """只扫这个玩家自己的对局，再补队伍合计（比全表窗口快一个数量级）。"""
+               champion: str | None = None, puuid: str | None = None, aram: bool | str = False,
+               q: Queue | None = None) -> dict:
+    """只扫这个玩家自己的对局，再补队伍合计（比全表窗口快一个数量级）。
+    q 决定取哪个队列的对局；aram（旧参数，ARAM / KIWI）等价于传对应的乱斗队列。"""
     puuid = puuid or resolve(name)
-    pos_filter = f"and mp.team_position = {sql_str(position)}" if position else ""
-    if champion:
-        pos_filter += f" and mp.champion_name = {sql_str(champion)}"
-    qid = {v: k for k, v in ARAM_QUEUES.items()}.get(aram, 450) if aram else None
+    q = q or (aram and _scope_queue(aram)) or QUEUES["rift"]
+    aram = q.tag if not q.laned else False
     extra = ",\n      coalesce(sum(mine.dmg::numeric) / nullif(sum(mine.tp) / 60.0, 0), 0)" if aram else ""
-    scope = (f"and mp.time_played > 180 and m.queue_id = {qid}" if aram else
-             "and mp.time_played > 300 and mp.team_position in ('TOP','JUNGLE','MIDDLE','BOTTOM','UTILITY')")
+    scope = _scope(q, position, champion)
+    pos_filter = ""
     sql = f"""
     with mine as (
       select mp.match_id, mp.team_id, mp.team_position, mp.damage_to_champ dmg, mp.gold_earned gold,
@@ -350,9 +392,11 @@ def player_row(name: str, days: int, games: int, position: str | None,
     """
     r = psql(sql)
     if not r:
-        what = f"位置 {position}" if position else "排位/匹配分路局"
+        what = q.name + ("分路局" if q.key == "rift" else "")
+        if position:
+            what += f" · 位置 {position}"
         if champion:
-            what += f"、英雄 {champion}"
+            what += f" · 英雄 {champion}"
         raise NoGames(f"{name} 最近 {days} 天没有对局（{what}）")
     row = {"name": name, "puuid": puuid, "pos": r[0][0], "games": int(r[0][1])}
     row.update({k: float(v) for k, v in zip([m[1] for m in METRICS], r[0][2:])})
@@ -365,35 +409,45 @@ class NoGames(SystemExit):
     pass
 
 
-def main_position(puuid: str, days: int) -> str | None:
+def main_position(puuid: str, days: int, q: Queue | None = None, champion: str | None = None) -> str | None:
+    """这个人在这个队列里打得最多的位置（给了英雄就只看这个英雄）。乱斗队列没有位置，返回 None。"""
+    q = q or QUEUES["rift"]
+    if not q.laned:
+        return None
     r = psql(f"""select mp.team_position from lol.match_participant mp
                  join lol.match m on m.match_id = mp.match_id
                  where mp.puuid = {sql_str(puuid)} and m.game_creation > now() - interval '{int(days)} days'
-                   and mp.time_played > 300 and mp.team_position in ('TOP','JUNGLE','MIDDLE','BOTTOM','UTILITY')
+                   {_scope(q, None, champion)}
                  group by 1 order by count(*) desc limit 1""")
     return r[0][0] if r else None
 
 
-def _scope(position: str | None, champion: str | None, aram: str | None) -> str:
-    """对局范围：峡谷分路局（可再限位置 / 英雄），或某个乱斗队列（aram = ARAM / KIWI）。和 player_row 同口径。"""
-    if aram:
-        qid = {v: k for k, v in ARAM_QUEUES.items()}[aram]
-        s = f"and mp.time_played > 180 and m.queue_id = {int(qid)}"
-    else:
-        s = "and mp.time_played > 300 and mp.team_position in ('TOP','JUNGLE','MIDDLE','BOTTOM','UTILITY')"
+def _scope(q: Queue | str | None, position: str | None = None, champion: str | None = None) -> str:
+    """对局范围，所有取个人数据的 SQL 共用这一个口径：
+    有分路的队列 = 分路局（超过 5 分钟）+ 队列过滤，可再限位置；乱斗 = 这个队列（超过 3 分钟）；都可再限英雄。
+    q 也接受旧的乱斗标签（ARAM / KIWI）或 None（= rift），兼容老调用。"""
+    if q is None:
+        q = QUEUES["rift"]
+    elif isinstance(q, str):
+        q = next(x for x in QUEUES.values() if x.tag == q)
+    if q.laned:
+        s = "and mp.time_played > 300 and mp.team_position in ('TOP','JUNGLE','MIDDLE','BOTTOM','UTILITY')" + q.filter()
         if position:
             s += f" and mp.team_position = {sql_str(position)}"
+    else:
+        s = "and mp.time_played > 180" + q.filter()
     if champion:
         s += f" and mp.champion_name = {sql_str(champion)}"
     return s
 
 
 def extras(puuid: str, days: int, position: str | None, champion: str | None = None,
-           aram: str | None = None) -> dict:
+           aram: str | None = None, q: Queue | None = None) -> dict:
     """对位卡用的附加信息。profile_icon 列可能还没建（下一轮入库才会 alter），用 to_jsonb 兼容。
-    aram 给了队列标签（ARAM / KIWI）时，近 10 局和常用英雄只算这个队列。"""
+    近 10 局和常用英雄只算队列 q（aram 是旧参数，传 ARAM / KIWI 等价于对应的乱斗队列）。"""
     if not puuid or not RE_PUUID.match(puuid):
         return {}
+    q = q or (aram and _scope_queue(aram)) or QUEUES["rift"]
     pu = sql_str(puuid)
     out: dict = {}
     r = psql(f"select to_jsonb(p)->>'profile_icon' from lol.player p where p.puuid = {pu}")
@@ -401,14 +455,13 @@ def extras(puuid: str, days: int, position: str | None, champion: str | None = N
     r = psql(f"select tier, division, lp from lol.player_rank where puuid = {pu} order by updated_at desc limit 1")
     if r:
         out["rank"] = {"tier": r[0][0], "division": r[0][1], "lp": int(r[0][2] or 0)}
-    scope = _scope(position, champion, aram)
     r = psql(f"""select mp.champion_name, mp.win from lol.match_participant mp
                  join lol.match m on m.match_id = mp.match_id
-                 where mp.puuid = {pu} {scope}
+                 where mp.puuid = {pu} {_scope(q, position, champion)}
                  order by m.game_creation desc limit 10""")
     out["recent"] = [{"champion": x[0], "win": x[1] == "t"} for x in r]
-    # 常用英雄不限分路（只限位置 / 英雄 / 队列），和原来一致
-    top_scope = _scope(None, champion, aram) if aram else (
+    # 常用英雄：峡谷默认队列沿用原来的口径（只要求超过 5 分钟，不要求有分路），其余队列和取数同口径
+    top_scope = _scope(q, position, champion) if q.key != "rift" else (
         "and mp.time_played > 300" + (f" and mp.team_position = {sql_str(position)}" if position else "")
         + (f" and mp.champion_name = {sql_str(champion)}" if champion else ""))
     r = psql(f"""select mp.champion_name, count(*), sum(case when mp.win then 1 else 0 end)
@@ -420,23 +473,32 @@ def extras(puuid: str, days: int, position: str | None, champion: str | None = N
     return out
 
 
-def champ_wins(puuid: str, champ: str, days: int, games: int, position: str | None) -> int:
-    pos_filter = f"and mp.team_position = {sql_str(position)}" if position else ""
+def _scope_queue(tag: str) -> Queue:
+    return next(x for x in QUEUES.values() if x.tag == tag)
+
+
+def champ_wins(puuid: str, champ: str, days: int, games: int, position: str | None,
+               q: Queue | None = None) -> int:
+    q = q or QUEUES["rift"]
+    # 峡谷默认队列沿用原来的口径（只要求超过 5 分钟）；其余队列和取数同口径
+    scope = (_scope(q, position, None) if q.key != "rift" else
+             "and mp.time_played > 300" + (f" and mp.team_position = {sql_str(position)}" if position else ""))
     r = psql(f"""select count(*) filter (where win) from (
                    select mp.win from lol.match_participant mp join lol.match m on m.match_id = mp.match_id
                    where mp.puuid = {sql_str(puuid)} and mp.champion_name = {sql_str(champ)}
-                     and m.game_creation > now() - interval '{int(days)} days' and mp.time_played > 300 {pos_filter}
+                     and m.game_creation > now() - interval '{int(days)} days' {scope}
                    order by m.game_creation desc limit {int(games)}) x""")
     return int(r[0][0]) if r else 0
 
 
 def avg_kda_line(puuid: str, days: int, games: int, position: str | None, champion: str | None = None,
-                 aram: str | None = None) -> str:
+                 aram: str | None = None, q: Queue | None = None) -> str:
+    q = q or (aram and _scope_queue(aram)) or QUEUES["rift"]
     r = psql(f"""select avg(k), avg(d), avg(a) from (
                    select mp.kills k, mp.deaths d, mp.assists a from lol.match_participant mp
                    join lol.match m on m.match_id = mp.match_id
                    where mp.puuid = {sql_str(puuid)} and m.game_creation > now() - interval '{int(days)} days'
-                     {_scope(position, champion, aram)}
+                     {_scope(q, position, champion)}
                    order by m.game_creation desc limit {int(games)}) x""")
     if not r or not r[0][0]:
         return ""
@@ -477,7 +539,7 @@ def quantiles(days: int, refresh: bool = False) -> tuple[dict, dict]:
     cols = ", ".join(
         f"percentile_cont(array(select generate_series(1,99)/100.0)) within group (order by {k})"
         for k in keys)
-    sql = (BASE.format(days=int(days))
+    sql = (BASE.format(days=int(days), qf="")
            + f", m as (select pos, {inner} from t) select pos, count(*), {cols} from m group by pos")
     curves: dict[str, dict[str, list[float]]] = {}
     counts: dict[str, int] = {}
@@ -656,14 +718,14 @@ def team_player(entry: dict, pos: str, a, pool_rows: list[dict], champ_names: di
     base = {"name": name or "?", "puuid": puuid, "pos": pos, "champion": champ}
     st, fallback = None, False
     try:
-        st = player_row(name, a.days, a.games, pos, puuid=puuid)
+        st = player_row(name, a.days, a.games, pos, puuid=puuid, q=a.q)
     except NoGames:
         try:
-            st = player_row(name, a.days, a.games, None, puuid=puuid)
+            st = player_row(name, a.days, a.games, None, puuid=puuid, q=a.q)
             fallback = True
         except NoGames:
             pass
-    ex = extras(puuid, a.days, None if fallback else pos)
+    ex = extras(puuid, a.days, None if fallback else pos, q=a.q)
     ex.pop("top_champs", None)
     if not st:
         return {**base, **ex, "score": None, "pcts": {}, "games": 0}
@@ -717,14 +779,14 @@ def team_mode(a) -> int:
             out.append((pos, by_pos.get(pos) or (rest.pop(0) if rest else {})))
         return out
 
-    pool_rows = pool(a.pool_days, refresh=a.refresh)
+    pool_rows = pool(a.pool_days, refresh=a.refresh, queue=a.q)
     pool_rows.count("TOP")  # 先在主线程把池子备好，免得 10 个线程同时冷启动重建
     jobs = order(ally) + order(enemy)
     res = pmap(lambda pe: team_player(pe[1], pe[0], a, pool_rows, champ_names), jobs, workers=10)
     left, right = res[:5], res[5:]
     hidden = sum(1 for p in right if p.get("missing_player"))
     render_team(left, right, Path(a.out), {
-        "title": "战前战力 · 5v5 对位",
+        "title": ("" if a.q.key == "rift" else f"{a.q.name} · ") + "战前战力 · 5v5 对位",
         "subtitle": f"{sub_head} · 每人取最近 {a.days} 天本位置 {a.games} 局"
                     + (f" · 分位池近 {a.pool_days} 天" if a.pool_days != a.days else ""),
         "badge": "全队对比", "sides": sides,
@@ -749,7 +811,7 @@ def pmap(fn, items, workers: int = 6):
         return list(ex.map(fn, items))
 
 
-def player_pos_rows(puuid: str, days: int, games: int) -> list[dict]:
+def player_pos_rows(puuid: str, days: int, games: int, q: Queue | None = None) -> list[dict]:
     """这个人最近 N 局（不限位置），按位置拆开各算一组八维均值。SQL 与 player_row 同口径。"""
     sql = f"""
     with mine as (
@@ -759,8 +821,7 @@ def player_pos_rows(puuid: str, days: int, games: int) -> list[dict]:
       from lol.match_participant mp
       join lol.match m on m.match_id = mp.match_id
       where mp.puuid = {sql_str(puuid)} and m.game_creation > now() - interval '{int(days)} days'
-        and mp.time_played > 300
-        and mp.team_position in ('TOP','JUNGLE','MIDDLE','BOTTOM','UTILITY')
+        {_scope(q, None, None)}
       order by m.game_creation desc
       limit {int(games)}
     ),
@@ -796,15 +857,16 @@ def overall_mode(a) -> int:
     """整体实力：每个位置先和本位置的人比（分位 + 评分），再按局数加权成一个不分路的总分。"""
     from lol_radar_card import render, score
     keys = [m[1] for m in METRICS]
-    pool_rows = pool(a.pool_days, refresh=a.refresh)
+    q = a.q
+    pool_rows = pool(a.pool_days, refresh=a.refresh, queue=q)
     pool_rows.count("TOP")  # 主线程先备好池子，别让两个线程同时冷启动
     puuids = pmap(resolve, a.players)
 
     def build(np_):
         name, pu = np_
-        rows = player_pos_rows(pu, a.days, a.games)
+        rows = player_pos_rows(pu, a.days, a.games, q)
         if not rows:
-            raise NoGames(f"{name} 最近 {a.days} 天没有分路对局")
+            raise NoGames(f"{name} 最近 {a.days} 天没有{q.name}分路对局")
         tot = sum(x["games"] for x in rows)
         per = []
         for x in rows:
@@ -813,18 +875,21 @@ def overall_mode(a) -> int:
         pcts = {k: sum(p["pcts"][k] * p["games"] for p in per) / tot for k in keys}
         stats = {k: sum(x[k] * x["games"] for x in rows) / tot for k in keys}
         sc = round(sum(p["score"] * p["games"] for p in per) / tot, 1)
-        ex = extras(pu, a.days, None)
+        ex = extras(pu, a.days, None, q=q)
         return {
             **ex, "name": name, "puuid": pu, "pos": "ALL", "games": tot,
             "stats": stats, "pcts": pcts, "score": sc, "pos_breakdown": per,
             "pool_note": f"最近 {tot} 局 · {len(per)} 个位置", "low_sample": tot < a.min_games,
+            "pool_size": min(pool_rows.count(p["pos"]) for p in per),
             "champion": (ex.get("top_champs") or [{}])[0].get("champion"),
-            "kda_line": avg_kda_line(pu, a.days, a.games, None),
+            "kda_line": avg_kda_line(pu, a.days, a.games, None, q=q),
         }
 
     cards = pmap(build, list(zip(a.players, puuids)))
+    qtag = "" if q.key == "rift" else f"{q.name} · "
     render(cards, Path(a.out), {
-        "title": "整体实力 · 全位置" if len(cards) == 2 else "整体实力 · 全位置雷达",
+        "small_pool": min(c["pool_size"] for c in cards) < SMALL_POOL,
+        "title": qtag + ("整体实力 · 全位置" if len(cards) == 2 else "整体实力 · 全位置雷达"),
         "subtitle": f"最近 {a.days} 天 · 每人取最近 {a.games} 局（不分位置）"
                     f" · 每个位置先和本位置的人比，再按局数加权 · 分位池近 {a.pool_days} 天",
         "badge": "全位置",
@@ -847,16 +912,33 @@ def main() -> int:
     ap.add_argument("--refresh", action="store_true", help="强制重建样本池（默认缓存 12 小时）")
     ap.add_argument("--match-id", default=None, help="单局模式：对比这一局同位置的两个人")
     ap.add_argument("--mode", choices=["duel", "match", "champ", "team", "overall", "aram"], default=None,
-                    help="duel=两人同位置近期；match=单局；champ=同英雄；team=5v5 全队；overall=整体实力；aram=大乱斗/斗魂")
+                    help="图怎么排：duel=1–2 人近期对比；match=单局；champ=只比同一个英雄；team=5v5 全队；"
+                         "overall=整体实力。和 --queue 组合，例如 duel + kiwi = 海克斯乱斗对比。"
+                         "aram = duel + --queue aram 的简写")
     ap.add_argument("--champion", default=None, help="champ 模式：英雄（英文 id / 中文名 / 称号）")
     ap.add_argument("--live", action="store_true", help="team 模式：从 PC 客户端读当前对局/选人")
     ap.add_argument("--pool-days", type=int, default=None,
                     help="同位置池子的时间窗（默认 = min(--days, 30)）。--days 只管取个人对局")
     ap.add_argument("--min-games", type=int, default=5, help="少于这么多局在图上标红提示样本不足")
-    ap.add_argument("--aram-queue", choices=["aram", "kiwi"], default="aram",
-                    help="aram 模式用哪个池：aram=普通大乱斗(450)，kiwi=海克斯乱斗(2400)")
+    ap.add_argument("--queue", choices=list(QUEUES), default=None,
+                    help="和谁比（取哪个队列的对局、比较池用哪个队列的人），可以和任何模式组合："
+                         "rift=峡谷全部分路局（默认）；solo=单双排；flex=灵活排位；ranked=单双排+灵活；"
+                         "normal=匹配；aram=普通大乱斗；kiwi=海克斯乱斗")
+    ap.add_argument("--aram-queue", choices=["aram", "kiwi"], default=None,
+                    help="旧参数，等价于 --mode aram --queue aram|kiwi")
     a = ap.parse_args()
     a.mode = a.mode or ("match" if a.match_id else "duel")
+    # aram 模式 = duel + 乱斗队列（旧写法照样能用）
+    if a.mode == "aram":
+        a.mode = "duel"
+        a.queue = a.queue or a.aram_queue or "aram"
+        if QUEUES[a.queue].laned:
+            ap.error(f"aram 模式只能配乱斗队列（aram / kiwi），不能配 {a.queue}")
+    elif a.aram_queue and not a.queue:
+        a.queue = a.aram_queue
+    a.q = QUEUES[a.queue or "rift"]
+    if not a.q.laned and a.mode in ("overall", "team"):
+        ap.error(f"{a.mode} 模式按位置算，{a.q.name}没有分路，不能组合")
     a.games = a.games or (50 if a.mode == "overall" else 20)
     a.pool_days = a.pool_days or min(a.days, 30)
     if not (1 <= a.pool_days <= 365):
@@ -877,49 +959,6 @@ def main() -> int:
 
     if a.mode == "overall":
         return overall_mode(a)
-
-    if a.mode == "aram":
-        tag = "KIWI" if a.aram_queue == "kiwi" else "ARAM"
-        qname = "海克斯乱斗" if tag == "KIWI" else "大乱斗"
-        pool_rows = pool(a.pool_days, refresh=a.refresh)
-        puuids = pmap(resolve, a.players)
-
-        def aram_row(np_):
-            try:
-                return player_row(np_[0], a.days, a.games, None, puuid=np_[1], aram=tag)
-            except NoGames:
-                raise NoGames(f"{np_[0]} 最近 {a.days} 天没有{qname}对局"
-                              + ("" if tag == "KIWI" else "（海克斯乱斗用 --aram-queue kiwi）"))
-        stats = pmap(aram_row, list(zip(a.players, puuids)))
-        pcts = [pool_rows.pcts(tag, st, ARAM_KEYS) for st in stats]
-        from lol_radar_card import render
-
-        def side(st):
-            ex = extras(st["puuid"], a.days, None, aram=tag)
-            return ex, avg_kda_line(st["puuid"], a.days, a.games, None, aram=tag)
-        sides = pmap(side, stats)
-        cards = []
-        for st, pc, (ex, kda_line) in zip(stats, pcts, sides):
-            low = st["games"] < a.min_games
-            cards.append({
-                **ex, "name": st["name"], "pos": tag, "games": st["games"],
-                "pool_note": f"{qname}池 {pool_rows.count(tag)} 人", "low_sample": low,
-                "stats": {k: st[k] for k in pc}, "pcts": pc, "axes": ARAM_AXES,
-                "fracs": pool_rows.fracs(tag, st, ARAM_KEYS),
-                "kda_line": kda_line,
-                "champion": (ex.get("top_champs") or [{}])[0].get("champion"),
-            })
-        render(cards, Path(a.out), {
-            "title": f"{qname} · 同模式百分位",
-            "subtitle": f"最近 {a.days} 天 · 每人取最近 {a.games} 局 · 分位池：近 {a.pool_days} 天同模式",
-            "badge": f"{qname}对比" if len(cards) == 2 else qname,
-            "footer": "外圈 = 同模式 P95（满格） · 超过 P99 才溢出",
-        })
-        print(json.dumps({"out": a.out, "mode": "aram", "players": [
-            {"name": s["name"], "queue": a.aram_queue, "games": s["games"],
-             "pct": {k: round(v, 1) for k, v in pc.items()}}
-            for s, pc in zip(stats, pcts)]}, ensure_ascii=False))
-        return 0
 
     if a.mode == "match":
         if not RE_MATCH_ID.match(a.match_id):
@@ -1005,69 +1044,105 @@ def main() -> int:
             raise SystemExit(f"不认识的英雄 {a.champion!r}")
         _, champ_key, champ_cn = hit
 
-    pool_rows = pool(a.pool_days, refresh=a.refresh)
+    return compare_mode(a, a.q, position, champ_key, champ_cn)
+
+
+def compare_mode(a, q: Queue, position: str | None, champ_key: str | None, champ_cn: str | None) -> int:
+    """玩家对比：1–2 人，在队列 q 里取近期对局，和同队列（有分路的再按同位置）的人比。
+    duel / champ / aram 都走这里，区别只是队列和是否限定英雄。"""
+    if not q.laned and position:
+        raise SystemExit(f"{q.name}没有分路，不能指定 --position")
+    pool_rows = pool(a.pool_days, refresh=a.refresh, queue=q)
+    keys = keys_of(q)
     puuids = pmap(resolve, a.players)
-    if len(a.players) == 2 and not position:
-        # 两人对比默认锁同一位置：第一个人的主位置（champ 模式取他玩这个英雄最多的位置）
-        if champ_key:
-            r = psql(f"""select mp.team_position from lol.match_participant mp
-                         join lol.match m on m.match_id = mp.match_id
-                         where mp.puuid = {sql_str(puuids[0])} and mp.champion_name = {sql_str(champ_key)}
-                           and m.game_creation > now() - interval '{int(a.days)} days' and mp.time_played > 300
-                           and mp.team_position in ('TOP','JUNGLE','MIDDLE','BOTTOM','UTILITY')
-                         group by 1 order by count(*) desc limit 1""")
-            position = r[0][0] if r else None
-        else:
-            position = main_position(puuids[0], a.days)
-    stats = pmap(lambda np_: player_row(np_[0], a.days, a.games, position, champion=champ_key, puuid=np_[1]),
-                 list(zip(a.players, puuids)))
-    pcts = [pool_rows.pcts(st["pos"], st) for st in stats]
-    notes = [f"同位置样本 {pool_rows.count(st['pos'])} 人" for st in stats]
+    if q.laned and len(a.players) == 2 and not position:
+        # 两人对比默认锁同一位置：第一个人在这个队列里的主位置（champ 模式取他玩这个英雄最多的位置）
+        position = main_position(puuids[0], a.days, q, champ_key)
+
+    def row(np_):
+        try:
+            return player_row(np_[0], a.days, a.games, position, champion=champ_key, puuid=np_[1], q=q)
+        except NoGames as e:
+            if not q.laned or q.key != "rift":
+                hint = "（海克斯乱斗用 --queue kiwi）" if q.key == "aram" else (
+                    "（不限队列用 --queue rift）" if q.laned else "")
+                raise NoGames(f"{e}{hint}")
+            raise
+    stats = pmap(row, list(zip(a.players, puuids)))
+    pkeys = [pool_key(q, st["pos"]) for st in stats]
+    pcts = [pool_rows.pcts(k, st, keys) for k, st in zip(pkeys, stats)]
+    pool_n = [pool_rows.count(k) for k in pkeys]
 
     from lol_radar_card import render
+
     def side(st):
-        ex = extras(st["puuid"], a.days, position or st["pos"], champ_key)
+        pos = (position or st["pos"]) if q.laned else None
+        ex = extras(st["puuid"], a.days, pos, champ_key, q=q)
         if champ_key:
             ex["top_champs"] = [{"champion": champ_key, "games": st["games"],
-                                 "wins": champ_wins(st["puuid"], champ_key, a.days, a.games, st["pos"])}]
-        return ex, avg_kda_line(st["puuid"], a.days, a.games, position or st["pos"], champ_key)
+                                 "wins": champ_wins(st["puuid"], champ_key, a.days, a.games, pos, q)}]
+        return ex, avg_kda_line(st["puuid"], a.days, a.games, pos, champ_key, q=q)
     sides = pmap(side, stats)
     cards = []
-    for st, pc, note, (ex, kda_line) in zip(stats, pcts, notes, sides):
+    for st, pk, pc, n, (ex, kda_line) in zip(stats, pkeys, pcts, pool_n, sides):
         low = st["games"] < a.min_games
+        who = "同位置" if q.laned else f"{q.name}"
         cards.append({
-            **ex, "name": st["name"], "pos": st["pos"], "games": st["games"],
-            "pool_note": f"最近 {st['games']} 局{'（样本少）' if low else ''} · {note}", "low_sample": low,
-            "stats": {k: st[k] for k in pc}, "pcts": pc,
-            "fracs": pool_rows.fracs(st["pos"], st),
+            **ex, "name": st["name"], "pos": pk, "games": st["games"],
+            "pool_note": f"最近 {st['games']} 局{'（样本少）' if low else ''} · {who}样本 {n} 人", "low_sample": low,
+            "pool_size": n, "stats": {k: st[k] for k in pc}, "pcts": pc,
+            "fracs": pool_rows.fracs(pk, st, keys),
+            **({} if q.laned else {"axes": ARAM_AXES}),
             "champion": champ_key or (ex.get("top_champs") or [{}])[0].get("champion"),
             "kda_line": kda_line,
         })
+
     same = len({c["pos"] for c in cards}) == 1
+    two = len(cards) == 2
+    # 标题：峡谷默认队列沿用原来的写法；指定了队列就把队列名写进标题
+    qtag = "" if q.key == "rift" else f"{q.name} · "
     if champ_key:
-        title = f"英雄专精 · {champ_cn}"
+        title = f"{qtag}英雄专精 · {champ_cn}"
         sub = (f"最近 {a.days} 天 · 只算 {champ_cn} 的对局，每人最多 {a.games} 局"
-               f" · 分位池：近 {a.pool_days} 天同位置所有英雄")
+               f" · 分位池：近 {a.pool_days} 天{'同位置所有英雄' if q.laned else q.name + '所有英雄'}")
+    elif not q.laned:
+        title = f"{q.name} · 同模式百分位"
+        sub = f"最近 {a.days} 天 · 每人取最近 {a.games} 局 · 分位池：近 {a.pool_days} 天同模式"
     else:
-        title = "战前对位 · 同位置百分位" if len(cards) == 2 else "能力雷达 · 同位置百分位"
+        title = qtag + ("战前对位 · 同位置百分位" if two else "能力雷达 · 同位置百分位")
         sub = f"最近 {a.days} 天 · 每人取最近 {a.games} 局" + (
-            f" · 统一按{POS_CN_SHORT.get(cards[0]['pos'])}比" if len(cards) == 2 and same else "")
+            f" · 统一按{POS_CN_SHORT.get(cards[0]['pos'])}比" if two and same else "")
         if a.pool_days != a.days:
             sub += f" · 分位池：近 {a.pool_days} 天"
     if not same:
         sub += " · 位置不同，跨位置比较仅供参考"
+    pos0 = cards[0]["pos"]
+    if not q.laned:
+        badge = f"{q.name}对比" if two else q.name
+    elif not same:
+        badge = "跨位置"
+    else:
+        badge = POS_BADGE.get(pos0, pos0) if two else POS_CN_SHORT.get(pos0, pos0)
     render(cards, Path(a.out), {
         "title": title,
         "subtitle": sub,
-        "badge": ("跨位置" if not same else
-                  POS_BADGE.get(cards[0]["pos"], cards[0]["pos"]) if len(cards) == 2 else
-                  POS_CN_SHORT.get(cards[0]["pos"], cards[0]["pos"])),
-        "footer": "外圈 = 同位置 P95（满格） · 超过 P99 才溢出 · 评分 = 八维分位按位置加权（0–10）",
+        "badge": badge,
+        "small_pool": min(pool_n) < SMALL_POOL,
+        "footer": ("外圈 = 同模式 P95（满格） · 超过 P99 才溢出" if not q.laned else
+                   "外圈 = 同位置 P95（满格） · 超过 P99 才溢出 · 评分 = 八维分位按位置加权（0–10）"),
     })
-    print(json.dumps({"out": a.out, "players": [
+    out = {"out": a.out, "players": [
         {"name": s["name"], "pos": s["pos"], "games": s["games"],
-         "pct": {k: round(v, 1) for k, v in pc.items()}} for s, pc in zip(stats, pcts)]},
-        ensure_ascii=False))
+         "pct": {k: round(v, 1) for k, v in pc.items()}} for s, pc in zip(stats, pcts)]}
+    if q.key != "rift":
+        out["queue"] = q.key
+        for p, n in zip(out["players"], pool_n):
+            p["pool"] = n
+    if not q.laned:   # 和原来 aram 模式的输出字段对齐
+        out = {"out": a.out, "mode": "aram", "players": [
+            {"name": s["name"], "queue": q.key, "games": s["games"], "pool": n,
+             "pct": {k: round(v, 1) for k, v in pc.items()}} for s, pc, n in zip(stats, pcts, pool_n)]}
+    print(json.dumps(out, ensure_ascii=False))
     return 0
 
 
