@@ -6,23 +6,28 @@ from dataclasses import dataclass
 from PIL import Image, ImageDraw
 
 from ..canvas import dashed, fit, name_parts, text_c
-from ..layout import Box, Ctx
+from ..layout import Box, Ctx, Node
 from ..scoring import player_score
 from ..theme import C_BG0, C_DIM, C_GOLD, C_TEXT, DEFAULT_AXES, SIDE, font, num_font
 
 
 @dataclass
-class Radar:
-    """中间的八维雷达（整页组件，画全部玩家）。box.cx / box.y 是圆心，radius 是满格半径。
+class Radar(Node):
+    """八维雷达（整页组件，画 ctx.players 里的全部玩家）。圆心在框的水平中点、距框顶 center_dy 处。
     第二个人画虚线外框（色盲友好）；两人时圆心写评分对比；底下是图例。"""
     radius: int = 238
+    center_dy: int = 362
     score_badge: bool = True
     legend: bool = True
+    z: int = 1   # 和玩家卡并排时最后画
+
+    def measure(self, ctx, p, w) -> int:
+        return self.center_dy + self.radius + (92 + 22 if self.legend else 54 + 24)
 
     def draw(self, ctx: Ctx, p, box: Box) -> None:
         img, players, R = ctx.img, ctx.players, self.radius
         axes = players[0].get("axes") or DEFAULT_AXES
-        cx, cy, n = box.cx, box.y, len(axes)
+        cx, cy, n = box.cx, box.y + self.center_dy, len(axes)
         ang = [-math.pi / 2 + 2 * math.pi * i / n for i in range(n)]
 
         def pt(i, r):

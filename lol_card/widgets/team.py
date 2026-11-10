@@ -1,31 +1,45 @@
-"""5v5 全队卡的组件：顶部战力条、每路一行的玩家条、中间的位置对比。"""
+"""5v5 全队卡的组件：顶部战力条、按路展开的容器、每路的玩家条和中间的位置对比。
+数据都在 ctx.teams = (左队 5 人, 右队 5 人) 里，按 TEAM_ORDER 排好，缺人为 None。"""
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 from ..canvas import fit, name_parts, paste_icon, text_c, text_r
-from ..layout import Box, Ctx
+from ..layout import Box, Ctx, Node
 from ..scoring import team_avg, title_of
-from ..theme import (C_BG0, C_DIM, C_GOLD, C_LINE, C_LOSE, C_PANEL, C_TEXT, C_TRACK, C_WIN, POS_CN, SIDE, W,
-                     font, num_font)
+from ..theme import (C_BG0, C_DIM, C_GOLD, C_LINE, C_LOSE, C_PANEL, C_TEXT, C_TRACK, C_WIN, POS_CN, SIDE,
+                     TEAM_ORDER, font, num_font)
 from .player import rank_text
 
 LEAD = 0.3   # 评分差 ≥ 这个值才算领先
 
 
+def _lane_scores(ctx: Ctx):
+    left, right = ctx.teams
+    i = ctx.lane
+    lp = left[i] if i < len(left) else None
+    rp = right[i] if i < len(right) else None
+    return (lp.get("score") if lp else None), (rp.get("score") if rp else None)
+
+
 @dataclass
-class TeamPowerBar:
-    """全队战力：两侧队名 + 平均分大字，中间一根按比例分色的条和结论。读 ctx.meta 里的 left/right。"""
+class TeamPowerBar(Node):
+    """全队战力：两侧队名 + 平均分大字，中间一根按比例分色的条和结论，下面一行说明（meta.note）。
+    左右各留 inset，色条两端各缩进 bar_inset。"""
+    height: int = 110
+    inset: int = 48
+    bar_inset: int = 250
 
     def draw(self, ctx: Ctx, p, box: Box) -> None:
         d, meta, y0 = ctx.d, ctx.meta, box.y
+        L, R = box.x + self.inset, box.x1 - self.inset
         names = meta.get("sides") or ("蓝色方", "红色方")
-        la, ra = team_avg(meta["_left"]), team_avg(meta["_right"])
-        d.text((48, y0), names[0], font=font(22, True), fill=SIDE[0])
-        text_r(d, (W - 48, y0), names[1], font(22, True), SIDE[1])
-        d.text((48, y0 + 26), f"{la:.1f}" if la is not None else "--", font=num_font(60), fill=SIDE[0])
-        text_r(d, (W - 48, y0 + 26), f"{ra:.1f}" if ra is not None else "--", num_font(60), SIDE[1])
-        bx0, bx1, by = 250, W - 250, y0 + 54
+        la, ra = team_avg(ctx.teams[0]), team_avg(ctx.teams[1])
+        d.text((L, y0), names[0], font=font(22, True), fill=SIDE[0])
+        text_r(d, (R, y0), names[1], font(22, True), SIDE[1])
+        d.text((L, y0 + 26), f"{la:.1f}" if la is not None else "--", font=num_font(60), fill=SIDE[0])
+        text_r(d, (R, y0 + 26), f"{ra:.1f}" if ra is not None else "--", num_font(60), SIDE[1])
+        bx0, bx1, by = box.x + self.bar_inset, box.x1 - self.bar_inset, y0 + 54
         lv, rv = (la if la is not None else 5.0), (ra if ra is not None else 5.0)
         split = int(bx0 + (bx1 - bx0) * lv / max(lv + rv, 0.1))
         d.rounded_rectangle([bx0, by, bx1, by + 16], 8, fill=SIDE[1])
@@ -36,21 +50,64 @@ class TeamPowerBar:
             verdict = "势均力敌" if abs(diff) < LEAD else f"{names[0] if diff > 0 else names[1]} 战力领先 {abs(diff):.1f}"
         else:
             verdict = "数据不足"
-        text_c(d, (W // 2, y0 + 12), verdict, font(22, True), C_GOLD)
+        text_c(d, (box.cx, y0 + 12), verdict, font(22, True), C_GOLD)
         if meta.get("note"):
-            text_c(d, (W // 2, y0 + 80), meta["note"], font(15), C_DIM)
+            text_c(d, (box.cx, y0 + 80), meta["note"], font(15), C_DIM)
 
 
 @dataclass
-class TeamRow:
-    """一路一个人：头像（右下角叠英雄）、名字、段位、近况，另一端是评分大字和称号。
-    ctx.idx 决定朝向：0 左侧（头像在左），1 右侧（镜像）。lead=True 时描边加粗高亮。"""
-    avatar: int = 80
+class Lanes(Node):
+    """按 TEAM_ORDER 每路画一次 child（一行），行间距 gap；画第几路由 ctx.lane 告诉子节点。"""
+    child: Node
+    gap: int = 10
 
-    def draw(self, ctx: Ctx, p: dict | None, box: Box, lead: bool = False) -> None:
-        img, A, side, color = ctx.img, ctx.A, ctx.idx, ctx.color
+    def measure(self, ctx, p, w) -> int:
+        h = self.child.measure(ctx, p, w)
+        return len(TEAM_ORDER) * h + (len(TEAM_ORDER) - 1) * self.gap
+
+    def draw(self, ctx: Ctx, p, box: Box) -> None:
+        h, saved = self.child.measure(ctx, p, box.w), ctx.lane
+        for i in range(len(TEAM_ORDER)):
+            ctx.lane = i
+            self.child.draw(ctx, p, Box(box.x, box.y + i * (h + self.gap), box.w, h))
+            ctx.bottom = max(ctx.bottom, box.y + i * (h + self.gap) + h)
+        ctx.lane = saved
+
+
+@dataclass
+class TeamSide(Node):
+    """把本路第 idx 队的人交给 child，并设好侧别和「本路是否领先」。"""
+    idx: int
+    child: Node
+
+    def measure(self, ctx, p, w) -> int:
+        return self.child.measure(ctx, None, w)
+
+    def draw(self, ctx: Ctx, p, box: Box) -> None:
+        team = ctx.teams[self.idx]
+        q = team[ctx.lane] if ctx.lane < len(team) else None
+        ls, rs = _lane_scores(ctx)
+        both = ls is not None and rs is not None
+        lead = both and ((ls - rs) if self.idx == 0 else (rs - ls)) >= LEAD
+        saved = (ctx.idx, ctx.lead)
+        ctx.idx, ctx.lead = self.idx, lead
+        try:
+            self.child.draw(ctx, q, box)
+        finally:
+            ctx.idx, ctx.lead = saved
+
+
+@dataclass
+class TeamRow(Node):
+    """一路一个人：头像（右下角叠英雄）、名字、段位、近况，另一端是评分大字和称号。
+    ctx.idx 决定朝向：0 左侧（头像在左），1 右侧（镜像）；ctx.lead 为真时描边加粗高亮。"""
+    avatar: int = 80
+    height: int = 112
+
+    def draw(self, ctx: Ctx, p: dict | None, box: Box) -> None:
+        img, A, side, color, lead = ctx.img, ctx.A, ctx.idx, ctx.color, ctx.lead
         d = ctx.d
-        x0, x1, y, h = box.x, box.x1, box.y, box.h
+        x0, x1, y, h = box.x, box.x1, box.y, box.h or self.height
         d.rounded_rectangle([x0, y, x1, y + h], 14, fill=C_PANEL + (230,),
                             outline=color if lead else C_LINE, width=2 if lead else 1)
         if side == 0:
@@ -119,12 +176,16 @@ class TeamRow:
 
 
 @dataclass
-class LaneCenter:
-    """中间一列：位置名 + 左右评分对比条 + 差值。"""
+class LaneCenter(Node):
+    """每路中间：位置名 + 左右评分对比条 + 差值，在框里水平居中。"""
     half: int = 64
+    height: int = 112
+    z: int = 1   # 和两侧玩家条并排时最后画
 
-    def draw(self, ctx: Ctx, pos: str, box: Box, ls, rs) -> None:
+    def draw(self, ctx: Ctx, p, box: Box) -> None:
         d, cx, y, half = ctx.d, box.cx, box.y, self.half
+        ls, rs = _lane_scores(ctx)
+        pos = TEAM_ORDER[ctx.lane]
         text_c(d, (cx, y + 14), POS_CN.get(pos, pos), font(20, True), C_TEXT)
         d.rounded_rectangle([cx - half, y + 52, cx + half, y + 60], 4, fill=C_TRACK)
         if ls is not None:

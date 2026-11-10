@@ -1,10 +1,11 @@
-"""玩家卡上的组件。box.x/box.w 是这一列的范围，box.y 是组件顶边；多数组件在列里水平居中。"""
+"""玩家卡上的组件。box 是排布层分给这个组件的框（x/w 是这一列的范围，y 是顶边）；多数组件在框里水平居中。
+每个组件报告自己要多高（measure），排布层据此把下一个组件接在下面。"""
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 from ..canvas import fit, name_parts, paste_icon, text_c
-from ..layout import Box, Ctx
+from ..layout import Box, Ctx, Node, _check_width
 from ..scoring import LABEL, player_score, title_of
 from ..theme import (C_BG0, C_DIM, C_GOLD, C_LINE, C_LOSE, C_PANEL, C_TEXT, C_TRACK, C_WIN, POS_CN,
                      SIDE, STAT_FMT, TEAM_ORDER, TIER_CN, font, num_font, win_color)
@@ -22,9 +23,12 @@ def rank_text(p: dict) -> str:
 # ---------------------------------------------------------------- 身份区
 
 @dataclass
-class Avatar:
-    """圆形头像（召唤师头像优先，没有就用英雄方图），单局有胜负角标。"""
+class Avatar(Node):
+    """圆形头像（召唤师头像优先，没有就用英雄方图），单局有胜负角标（角标会略微伸出头像下沿）。"""
     size: int = 132
+
+    def measure(self, ctx, p, w) -> int:
+        return self.size
 
     def draw(self, ctx: Ctx, p: dict, box: Box) -> None:
         A, S = ctx.A, self.size
@@ -39,8 +43,10 @@ class Avatar:
 
 
 @dataclass
-class NameLine:
+class NameLine(Node):
+    """名字（去掉 #tag），超宽截断。height = 这一行占的高度。"""
     size: int = 30
+    height: int = 42
 
     def draw(self, ctx: Ctx, p: dict, box: Box) -> None:
         d, f = ctx.d, font(self.size, True)
@@ -48,26 +54,30 @@ class NameLine:
 
 
 @dataclass
-class RankLine:
+class RankLine(Node):
+    """#tag · 段位。"""
     size: int = 18
+    height: int = 28
 
     def draw(self, ctx: Ctx, p: dict, box: Box) -> None:
         text_c(ctx.d, (box.cx, box.y), rank_text(p), font(self.size), C_DIM)
 
 
 @dataclass
-class KdaLine:
+class KdaLine(Node):
     """单局 K/D/A 或历史场均。"""
     size: int = 40
+    height: int = 46
 
     def draw(self, ctx: Ctx, p: dict, box: Box) -> None:
         text_c(ctx.d, (box.cx, box.y), p.get("kda_line", ""), num_font(self.size), C_TEXT)
 
 
 @dataclass
-class PosLine:
+class PosLine(Node):
     """位置；样本不足时标红。"""
     size: int = 16
+    height: int = 32
 
     def draw(self, ctx: Ctx, p: dict, box: Box) -> None:
         text_c(ctx.d, (box.cx, box.y), f"{POS_CN.get(p['pos'], p['pos'])}", font(self.size),
@@ -77,15 +87,18 @@ class PosLine:
 # ---------------------------------------------------------------- 中段（单局装备 / 常用英雄 / 分位置）
 
 @dataclass
-class Loadout:
-    """一行：[英雄] [召唤师技能 ×2] [基石 + 副系] [装备 3×2] [饰品]。
+class Loadout(Node):
+    """一行：[英雄] [召唤师技能 ×2] [基石 + 副系] [装备 3×2] [饰品]，整行在框里居中。
     单局最核心的信息（打的什么、带的什么、出了什么），所以给足尺寸。"""
     champ: int = 84
     icon: int = 40
     sub: int = 28
-    gap: int = 4        # 同一块里图标之间
+    gap: int = 4         # 同一块里图标之间
     block_gap: int = 14  # 块与块之间
     trinket: bool = True
+
+    def measure(self, ctx, p, w) -> int:
+        return max(self.champ, 2 * self.icon + self.gap)
 
     def draw(self, ctx: Ctx, p: dict, box: Box) -> None:
         A, img, y = ctx.A, ctx.img, box.y
@@ -94,6 +107,7 @@ class Loadout:
         if self.trinket:
             blocks.append(("trinket", I))
         total = sum(w for _, w in blocks) + self.block_gap * (len(blocks) - 1)
+        _check_width("Loadout", total, box.w)
         x = box.cx - total // 2
         for kind, w in blocks:
             if kind == "champ":
@@ -123,11 +137,14 @@ class Loadout:
 
 
 @dataclass
-class TopChamps:
-    """常用英雄：最多 4 个，下面写局数和胜率。"""
+class TopChamps(Node):
+    """常用英雄：最多 limit 个，下面写局数和胜率。"""
     size: int = 52
     gap: int = 22
     limit: int = 4
+
+    def measure(self, ctx, p, w) -> int:
+        return self.size + 4 + 18   # 图标 + 间距 + 一行 14px 小字
 
     def draw(self, ctx: Ctx, p: dict, box: Box) -> None:
         tops = (p.get("top_champs") or [])[:self.limit]
@@ -143,7 +160,7 @@ class TopChamps:
 
 
 @dataclass
-class PosBreakdown:
+class PosBreakdown(Node):
     """整体模式：上野中下辅五格，每格写位置 / 该位置评分 / 局数与占比；没打过的写 --。"""
     cell: int = 80
     gap: int = 8
@@ -173,14 +190,14 @@ class PosBreakdown:
 
 # ---------------------------------------------------------------- 评分 / 近期 / 明细
 
-SCORE_BARS = [("伤害", "dmg_share"), ("承伤", "tank_share"), ("经济", "gold_per_min"), ("参团", "kp")]
+SCORE_BARS = (("伤害", "dmg_share"), ("承伤", "tank_share"), ("经济", "gold_per_min"), ("参团", "kp"))
 
 
 @dataclass
-class ScoreBox:
-    """评分卡：综合评分大字 + 称号胶囊 + 四项关键指标小条。"""
+class ScoreBox(Node):
+    """评分卡：综合评分大字 + 称号胶囊 + 若干关键指标小条，铺满框宽。"""
     height: int = 188
-    bars: tuple = tuple(SCORE_BARS)
+    bars: tuple = SCORE_BARS
 
     def draw(self, ctx: Ctx, p: dict, box: Box) -> None:
         d, x0, y0, x1, color = ctx.d, box.x, box.y, box.x1, ctx.color
@@ -212,11 +229,14 @@ class ScoreBox:
 
 
 @dataclass
-class RecentStrip:
-    """近 N 局：一行英雄小图标，绿框赢红框输。"""
+class RecentStrip(Node):
+    """近 N 局：一行标题 + 一行英雄小图标，绿框赢红框输。"""
     size: int = 36
     gap: int = 7
     limit: int = 10
+
+    def measure(self, ctx, p, w) -> int:
+        return 32 + self.size   # 标题行 + 图标
 
     def draw(self, ctx: Ctx, p: dict, box: Box) -> None:
         rec = (p.get("recent") or [])[:self.limit]
@@ -232,7 +252,7 @@ class RecentStrip:
 
 
 @dataclass
-class DetailPanel:
+class DetailPanel(Node):
     """单人模式右栏：八维逐条分位条，从强到弱排。"""
     height: int = 616
     row: int = 62

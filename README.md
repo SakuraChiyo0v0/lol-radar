@@ -83,27 +83,32 @@ tools/               capture.py 录制渲染输入，compare.py 逐像素对比�
 
 ## 改布局
 
-元素都是独立组件，排布写在 [`lol_card/templates.py`](lol_card/templates.py)。玩家卡是一列从上到下的 `At(y, 组件)`：
+元素都是独立组件，整页结构写在 [`lol_card/templates.py`](lol_card/templates.py)，不写坐标：每个组件报告自己要多高，`VStack` 把下一个接在上一个下面，`HStack` 从左往右分宽度。
 
 ```python
-PLAYER_SLOTS = [
-    At(124, Avatar()),
-    At(266, NameLine()),
-    ...
-    At(414, Loadout(), when=_has_items),     # 单局才有
-    At(414, TopChamps(), when=_champs),      # 历史模式
-    At(528, ScoreBox()),
-    At(760, RecentStrip()),
-]
+PLAYER_CARD = VStack([
+    Avatar(), Gap(10), NameLine(), RankLine(), KdaLine(), PosLine(),
+    OneOf([(has_items, Loadout()), (has_breakdown, PosBreakdown()), (None, TopChamps())]),
+    Gap(30), ScoreBox(), Gap(44), RecentStrip(),
+])
+
+CARD_PAGE = VStack([
+    Header(), Gap(28),
+    HStack([(CARD_W, Side(0, PLAYER_CARD)), (None, Radar()), (CARD_W, Side(1, PLAYER_CARD))], pad=MARGIN),
+])
 ```
 
-改顺序、改高度、按模式显示 / 隐藏，都只改这个列表；改某个元素的样子，就给组件传参数，比如 `Loadout(icon=44)`。细节见 [`lol_card/README.md`](lol_card/README.md)。
+- 放大装备区：改成 `Loadout(icon=48)`，下面的评分卡和近 10 局会自动往下让。
+- 调距离：改中间的 `Gap`。
+- 某个模式单独排：复制一份改好，登记到 `TEMPLATES`。
+
+内容超出画布、或者某个元素比分到的宽度还宽，出图时会在 stderr 提示。细节见 [`lol_card/README.md`](lol_card/README.md)。
 
 改完想确认没把别的模式画坏：
 
 ```bash
 python3 tools/capture.py match --mode match --match-id HN1_xxx --players "Player#1234"   # 先录一次输入
-git stash && cp -r . /tmp/base && git stash pop                                          # 留一份改动前的代码
+git worktree add /tmp/base HEAD                                                          # 改动前的代码
 python3 tools/compare.py /tmp/base                                                       # 逐像素对比
 ```
 
