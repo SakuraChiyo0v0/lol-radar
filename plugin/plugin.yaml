@@ -1,0 +1,4 @@
+name: lol-radar
+version: 1.0.0
+description: "lol_radar 工具 —— 让模型直接出英雄联盟能力雷达/对位卡（duel/overall/champ/match/team），返回 MEDIA 图片行。底层调 lol_radar.py（位置见 LOL_RADAR_SCRIPT）。"
+author: Hermes Agent

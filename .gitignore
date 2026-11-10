@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.env
+# 录制的真实对局数据和出图，不进仓库
+fixtures/
+*.png
+!docs/*.png
+*.bak*
