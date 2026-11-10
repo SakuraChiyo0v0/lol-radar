@@ -30,6 +30,7 @@ INVERT_TANK = {"MIDDLE", "BOTTOM"}
 WEIGHTS["ALL"] = {k: 1.0 for k in WEIGHTS["MIDDLE"]}
 WEIGHTS["ARAM"] = {k: 1.0 for k in WEIGHTS["MIDDLE"]}
 WEIGHTS["ARAM"].update({"dmg_per_min": 1.0, "vision_per_min": 0.0})
+WEIGHTS["KIWI"] = WEIGHTS["ARAM"]   # 海克斯乱斗和普通大乱斗同一套权重
 WEIGHTS["ALL"]["tank_share"] = 0.3
 
 

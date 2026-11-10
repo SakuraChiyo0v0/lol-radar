@@ -15,7 +15,7 @@
 | `champ` | 只比同一个英雄的对局 | 该英雄的局数和胜率 |
 | `overall` | 整体实力：五个位置分别算，再按局数加权 | 上野中下辅五格评分 |
 | `team` | 5v5 全队战力（库里的对局，或读客户端实时对局） | 每路一行 |
-| `aram` | 大乱斗 / 海克斯乱斗，和同模式的人比 | 常用英雄 |
+| `aram` | 大乱斗（`--aram-queue aram`）或海克斯乱斗（`kiwi`），1–2 人，和同模式的人比。K/D/A、常用英雄、近 10 局也只算这个模式 | 常用英雄 |
 
 ```bash
 python3 lol_radar.py --players "Player#1234" "Rival#5678" --position ADC
@@ -24,6 +24,7 @@ python3 lol_radar.py --mode champ --champion 伊泽瑞尔 --players "Player#1234
 python3 lol_radar.py --mode overall --players "Player#1234" --days 90
 python3 lol_radar.py --mode team --match-id HN1_1234567891
 python3 lol_radar.py --mode aram --players "Player#1234"
+python3 lol_radar.py --mode aram --aram-queue kiwi --players "Player#1234" "Rival#5678"   # 海克斯乱斗两人对比
 ```
 
 `python3 lol_radar.py --help` 看全部参数。脚本最后一行会打印一行 JSON 摘要（各人各维的分位），方便别的程序接着用。

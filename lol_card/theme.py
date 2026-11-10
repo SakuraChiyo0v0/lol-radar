@@ -25,7 +25,7 @@ SIDE = [(70, 170, 255), (255, 120, 90)]   # 左蓝右红，与雷达系列色一
 TIER_CN = {"IRON": "黑铁", "BRONZE": "青铜", "SILVER": "白银", "GOLD": "黄金", "PLATINUM": "铂金",
            "EMERALD": "翡翠", "DIAMOND": "钻石", "MASTER": "大师", "GRANDMASTER": "宗师", "CHALLENGER": "王者"}
 POS_CN = {"TOP": "上单", "JUNGLE": "打野", "MIDDLE": "中单", "BOTTOM": "下路", "UTILITY": "辅助",
-          "ALL": "全位置", "ARAM": "大乱斗"}
+          "ALL": "全位置", "ARAM": "大乱斗", "KIWI": "海克斯乱斗"}
 TEAM_ORDER = ["TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"]
 
 # 雷达默认八轴：(轴名, 指标 key, 原始值格式)

@@ -38,7 +38,8 @@ PYTHON = _env("LOL_RADAR_PYTHON", "python3")
 KEEP_SECONDS = int(_env("LOL_RADAR_TOOL_KEEP", str(3 * 86400)))   # 出过的图保留多久，之后下次调用顺手清掉
 TIMEOUT = int(_env("LOL_RADAR_TOOL_TIMEOUT", "240"))              # 冷启动建 30 天池子约 75 秒，留足余量
 
-MODES = ("duel", "overall", "champ", "match", "team")
+MODES = ("duel", "overall", "champ", "match", "team", "aram")
+ARAM_QUEUES = ("aram", "kiwi")    # aram=普通大乱斗(450)，kiwi=海克斯乱斗(2400)
 
 
 def _allow_live() -> bool:
@@ -118,8 +119,13 @@ def build_argv(params: dict, out: str) -> list[str]:
         mode = "match" if match_id else ("team" if live else "duel")
     if mode not in MODES:
         raise ValueError(f"mode 可用：{' / '.join(MODES)}")
-    if mode in ("duel", "overall") and not players:
+    if mode in ("duel", "overall", "aram") and not players:
         raise ValueError(f"{mode} 模式需要 players（1–2 人）")
+    queue = str(p.get("queue") or "").strip().lower()
+    if queue and queue not in ARAM_QUEUES:
+        raise ValueError("queue 可用：aram（普通大乱斗）/ kiwi（海克斯乱斗）")
+    if queue and mode != "aram":
+        raise ValueError("queue 只在 aram 模式用")
     if mode == "champ" and not (champion and players):
         raise ValueError("champ 模式需要 champion 和 players")
     if mode == "match" and not match_id:
@@ -140,6 +146,8 @@ def build_argv(params: dict, out: str) -> list[str]:
         argv += ["--champion", champion]
     if position:
         argv += ["--position", position]
+    if queue:
+        argv += ["--aram-queue", queue]
     for key, flag, lo, hi in (("days", "--days", 1, 365), ("games", "--games", 1, 500),
                               ("pool_days", "--pool-days", 1, 365), ("min_games", "--min-games", 1, 100)):
         n = _int(p, key, lo, hi)
@@ -198,7 +206,9 @@ SCHEMA = {
         "出英雄联盟能力雷达 / 对位卡图片（八维同位置百分位 + 0–10 综合评分 + 称号）。"
         "用户想看「某人/两个人的水平」「战前对位谁强」「这把打得怎么样」「我们队和对面谁强」时用。"
         "mode：duel=两人同位置近期对比（默认，单人就是个人雷达）；overall=整体实力，五个位置分别算再加权；"
-        "champ=只比同一个英雄；match=某一局里同位置两人的本场发挥；team=5v5 全队战力。"
+        "champ=只比同一个英雄；match=某一局里同位置两人的本场发挥；team=5v5 全队战力；"
+        "aram=大乱斗（queue=aram）或海克斯乱斗（queue=kiwi）1–2 人对比，和同模式的人比。"
+        "用户说「乱斗」「海克斯」时多半是海克斯乱斗，没局数再换普通大乱斗。"
         "玩家一律写成「名字#tag」。成功后把 reply_line 原样放进最终回复。"
         "某人局数少时会标红，要提醒用户只是参考；局数太少可以把 days 拉长（如 365）多取几局。"
     ),
@@ -218,6 +228,8 @@ SCHEMA = {
             "match_id": {"type": "string", "description": "match 或 team 模式用：对局 ID，例如 HN1_1234567891"},
             "live": {"type": "boolean", "description": "team 模式：从用户 PC 客户端读当前选人/对局的 10 个人（需要 PC 开着且在选人或游戏中）"},
             "min_games": {"type": "integer", "description": "少于这么多局标红「样本少」，默认 5"},
+            "queue": {"type": "string", "enum": list(ARAM_QUEUES),
+                      "description": "aram 模式用：aram=普通大乱斗（默认），kiwi=海克斯乱斗"},
         },
         "required": [],
     },
