@@ -45,8 +45,12 @@ def _allow_live() -> bool:
     """live 会 ssh 到用户 PC 读客户端当前对局。按插件所在 profile 决定：
     <profile home>/lol-radar.json 里 {"allow_live": false} 就关。文件不存在 = 允许（default 自用）。
     多路复用网关里 HERMES_HOME 恒为 default，所以用插件自身位置反推 home（同 social-cli）。
+
+    注意用 absolute() 不用 resolve()：插件目录常常是指向仓库 clone 的软链接，resolve() 会跟着链接
+    跑进仓库目录，找不到 profile 里的配置，live 就会被误开。LOL_RADAR_TOOL_CONFIG 可以直接指定文件。
     """
-    cfg = Path(__file__).resolve().parents[2] / "lol-radar.json"
+    explicit = (os.environ.get("LOL_RADAR_TOOL_CONFIG") or "").strip()
+    cfg = Path(explicit) if explicit else Path(__file__).absolute().parents[2] / "lol-radar.json"
     try:
         return bool(json.loads(cfg.read_text(encoding="utf-8")).get("allow_live", True))
     except (OSError, ValueError):
