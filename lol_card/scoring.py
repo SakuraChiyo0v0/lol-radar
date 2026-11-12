@@ -5,11 +5,13 @@ TITLES_HI = {
     "dmg_share": "输出核心", "dmg_per_gold": "伤转怪", "gold_per_min": "经济机器",
     "cs_per_min": "补刀大师", "kp": "团战发动机", "vision_per_min": "视野之神",
     "kda": "不死之身", "tank_share": "人肉盾牌",
+    "dmg_per_min": "火力全开",          # 乱斗才有这一维
 }
 TITLES_LO = {
     "dmg_share": "刮痧师傅", "dmg_per_gold": "经济黑洞", "gold_per_min": "穷鬼",
     "cs_per_min": "补刀困难户", "kp": "单机玩家", "vision_per_min": "视野盲人",
     "kda": "送分童子", "tank_share": "隐身人",
+    "dmg_per_min": "哑火",
 }
 LABEL = {
     "dmg_share": "伤害占比", "dmg_per_gold": "伤害转化", "gold_per_min": "经济",
@@ -51,20 +53,35 @@ def player_score(p: dict) -> float:
     return p["score"] if p.get("score") is not None else score(p["pcts"], p["pos"])
 
 
-def title_of(pcts: dict, pos: str) -> tuple[str, bool]:
-    """称号取最突出的一维：最高 ≥80 给褒义，否则最低 ≤20 给贬义，都没有就按评分给个中性称号。"""
+HI_AT = 80   # 某一维 ≥ 这个分位才给褒义称号
+LO_AT = 20   # 某一维 ≤ 这个分位才给贬义称号
+
+
+def _ranked(pcts: dict, pos: str) -> list[tuple[str, float]]:
+    """参与称号的维度：这个位置权重太低的不算（比如辅助的补刀），C 位的承伤也不算（含义相反）。"""
     w = WEIGHTS.get(pos, WEIGHTS["MIDDLE"])
-    ranked = [(k, v) for k, v in pcts.items() if w.get(k, 1) >= 0.5]
+    out = [(k, v) for k, v in pcts.items() if w.get(k, 1) >= 0.5 and k in TITLES_HI]
     if pos in INVERT_TANK:
-        ranked = [(k, v) for k, v in ranked if k != "tank_share"]
-    hi = max(ranked, key=lambda kv: kv[1])
-    lo = min(ranked, key=lambda kv: kv[1])
-    if hi[1] >= 80:
-        return TITLES_HI[hi[0]], True
-    if lo[1] <= 20:
-        return TITLES_LO[lo[0]], False
+        out = [(k, v) for k, v in out if k != "tank_share"]
+    return out
+
+
+def titles_of(pcts: dict, pos: str, limit: int = 4) -> list[tuple[str, bool]]:
+    """所有够格的称号，最多 limit 个：先褒后贬，各自按突出程度排。
+    只给真正突出的维度（≥80 / ≤20），不够就少给，不凑数；一个都没有时按评分给一个中性称号。"""
+    ranked = _ranked(pcts, pos)
+    good = [(TITLES_HI[k], True) for k, v in sorted(ranked, key=lambda kv: -kv[1]) if v >= HI_AT]
+    bad = [(TITLES_LO[k], False) for k, v in sorted(ranked, key=lambda kv: kv[1]) if v <= LO_AT]
+    out = (good + bad)[:limit]
+    if out:
+        return out
     sc = score(pcts, pos)
-    return ("稳定发挥" if sc >= 5 else "中规中矩"), sc >= 5
+    return [("稳定发挥" if sc >= 5 else "中规中矩", sc >= 5)]
+
+
+def title_of(pcts: dict, pos: str) -> tuple[str, bool]:
+    """只要一个称号时（5v5 每路一行）：最突出的那个。"""
+    return titles_of(pcts, pos, 1)[0]
 
 
 def comment(pcts: dict, pos: str, other: dict | None) -> str:

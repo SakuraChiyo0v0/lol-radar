@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from ..canvas import fit, name_parts, paste_icon, text_c
 from ..layout import Box, Ctx, Node, _check_width
-from ..scoring import LABEL, player_score, title_of
+from ..scoring import LABEL, player_score, titles_of
 from ..theme import (C_BG0, C_DIM, C_GOLD, C_LINE, C_LOSE, C_PANEL, C_TEXT, C_TRACK, C_WIN, POS_CN,
                      SIDE, STAT_FMT, TEAM_ORDER, TIER_CN, font, num_font, win_color)
 
@@ -205,9 +205,23 @@ SCORE_BARS = (("伤害", "dmg_share"), ("承伤", "tank_share"), ("经济", "gol
 
 @dataclass
 class ScoreBox(Node):
-    """评分卡：综合评分大字 + 称号胶囊 + 若干关键指标小条，铺满框宽。"""
+    """评分卡：综合评分大字 + 称号胶囊 + 若干关键指标小条，铺满框宽。
+    称号最多 max_titles 个，排成两行两列（一个时和原来一样居中在一行）；只放真正够格的，放不下就少放。"""
     height: int = 188
     bars: tuple = SCORE_BARS
+    max_titles: int = 4
+
+    def _pill(self, d, x, y, h, title, good, f):
+        tw = d.textlength(title, font=f)
+        d.rounded_rectangle([x, y, x + tw + 2 * self._pad(h), y + h], h // 2,
+                            fill=(46, 90, 60) if good else (96, 44, 48), outline=C_WIN if good else C_LOSE)
+        # 文字基线：h=36 / 20 号字时是 +4，和原来单个称号的位置一模一样
+        d.text((x + self._pad(h), y + (h - f.size) // 2 - 4), title, font=f, fill=C_TEXT)
+        return tw + 2 * self._pad(h)
+
+    @staticmethod
+    def _pad(h):
+        return 14 if h >= 36 else 11
 
     def draw(self, ctx: Ctx, p: dict, box: Box) -> None:
         d, x0, y0, x1, color = ctx.d, box.x, box.y, box.x1, ctx.color
@@ -216,15 +230,29 @@ class ScoreBox(Node):
         d.rectangle([x0 + 1, y0 + 14, x0 + 5, y0 + h - 14], fill=color)
 
         sc = player_score(p)
-        title, good = title_of(p["pcts"], p["pos"])
+        titles = titles_of(p["pcts"], p["pos"], self.max_titles)
         d.text((x0 + 28, y0 + 16), "综合评分", font=font(18), fill=C_DIM)
         d.text((x0 + 26, y0 + 34), f"{sc:.1f}", font=num_font(76), fill=C_GOLD if sc >= 6 else C_TEXT)
-        f = font(20, True)
-        tw = d.textlength(title, font=f)
-        tx = x0 + 150
-        d.rounded_rectangle([tx, y0 + 58, tx + tw + 28, y0 + 94], 18,
-                            fill=(46, 90, 60) if good else (96, 44, 48), outline=C_WIN if good else C_LOSE)
-        d.text((tx + 14, y0 + 62), title, font=f, fill=C_TEXT)
+        tx, right = x0 + 150, x1 - 20
+        if len(titles) == 1:
+            # 一个称号：和原来完全一样（一行居中，高 36）
+            self._pill(d, tx, y0 + 58, 36, *titles[0], font(20, True))
+        else:
+            # 多个：两行，每行最多两个，高 30、间距 8；一行放不下第二个就挪到下一行，两行都满就不放了
+            # 先排版再画：只用到一行时，这一行和单个称号一样竖直居中，不挤在上面
+            f, ph, gap = font(17, True), 30, 8
+            placed, r, x = [], 0, tx
+            for title, good in titles:
+                w = d.textlength(title, font=f) + 2 * self._pad(ph)
+                if x > tx and x + w > right:
+                    r, x = r + 1, tx
+                if r >= 2 or x + w > right:
+                    break
+                placed.append((r, x, title, good))
+                x += w + gap
+            rows = [y0 + 76 - ph // 2] if r == 0 else [y0 + 40, y0 + 40 + ph + gap]
+            for r, x, title, good in placed:
+                self._pill(d, x, rows[r], ph, title, good, f)
 
         n = len(self.bars)
         bw = (box.w - 56 - (n - 1) * 14) // n
