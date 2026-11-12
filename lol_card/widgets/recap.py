@@ -9,7 +9,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageOps, ImageStat
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageStat
 
 from ..canvas import fit, name_parts, paste_icon, text_c, text_r
 from ..layout import Box, Ctx, Node
@@ -26,7 +26,8 @@ def _score_color(s: float) -> tuple:
 
 
 def _row_art(A, champ: str, size: tuple[int, int], side: int):
-    """玩家条的底图：原画裁成条状，模糊、亮度统一、高光削平、往本侧颜色偏一点。拿不到原画返回 None。"""
+    """玩家条的底图：原画裁成条状，模糊、亮度统一、高光削平、往本侧颜色偏一点。拿不到原画返回 None。
+    两边都用原画本来的朝向。"""
     art = A.splash(champ) if champ else None
     if art is None:
         return None
@@ -36,8 +37,7 @@ def _row_art(A, champ: str, size: tuple[int, int], side: int):
     # centered 原画人物在中间偏上：横向居中，纵向取上三分之一处
     x, y = (s.width - w) // 2, max(0, (s.height - h) // 3)
     part = s.crop((x, y, x + w, y + h))
-    if side == 1:
-        part = ImageOps.mirror(part)
+    # 不镜像：原画里人物朝哪边不固定（盖伦朝左、很多人朝右），镜像了反而会朝外，画里的字和武器也会反
     part = part.filter(ImageFilter.GaussianBlur(2))
     luma = ImageStat.Stat(part.convert("L")).mean[0] or 1
     part = ImageEnhance.Brightness(part).enhance(min(1.6, ROW_LUMA / luma))

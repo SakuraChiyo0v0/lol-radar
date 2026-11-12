@@ -104,15 +104,15 @@ def _fade_mask(x0: int, x1: int, left: bool) -> Image.Image:
 
 
 def _splash_side(art: Image.Image, side: int, color: tuple) -> Image.Image:
-    """一侧的原画层：按高度铺满，取人物所在的中间偏右那段；右侧镜像让人物朝向中间。
+    """一侧的原画层：按高度铺满，取人物所在的中间那段。两侧都用原画本来的朝向——
+    人物朝哪边各张原画不一样（盖伦朝左、很多人朝右），镜像了一半会反而朝外，画里的字和武器也会反。
     模糊一点去掉细节（不和前景抢），亮度统一压到 SPLASH_LUMA，再往本侧颜色偏一点。"""
-    from PIL import ImageEnhance, ImageOps, ImageStat
+    from PIL import ImageEnhance, ImageStat
     s = art.resize((max(SPLASH_W, int(art.width * H / art.height)), H), Image.LANCZOS)
-    # centered 原画人物大多在中间：取中间往右的一段，左边的人就站在画布左缘附近
-    x = max(0, min(s.width - SPLASH_W, s.width // 2 - SPLASH_W // 3))
+    # 人物大多在原画中间：左侧取中间往右一段（人站在画布左缘附近），右侧取中间往左一段（人站在右缘附近）
+    off = SPLASH_W // 3 if side == 0 else SPLASH_W - SPLASH_W // 3
+    x = max(0, min(s.width - SPLASH_W, s.width // 2 - off))
     part = s.crop((x, 0, x + SPLASH_W, H))
-    if side == 1:
-        part = ImageOps.mirror(part)
     part = part.filter(ImageFilter.GaussianBlur(5))
     part = ImageEnhance.Color(part).enhance(0.8)
     luma = ImageStat.Stat(part.convert("L")).mean[0] or 1

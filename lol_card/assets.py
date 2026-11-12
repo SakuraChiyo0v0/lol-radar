@@ -162,10 +162,13 @@ class Assets:
         if not p.exists():
             if miss.exists() and time.time() - miss.stat().st_mtime < 86400:
                 return None
-            raw = _get(f"{DD}/cdn/img/champion/centered/{k}_0.jpg", timeout=15)
+            # 有的英雄没有 centered 版（比如草人 Fiddlesticks 返回 403），退到普通 splash 版
+            raw = (_get(f"{DD}/cdn/img/champion/centered/{k}_0.jpg", timeout=15)
+                   or _get(f"{DD}/cdn/img/champion/splash/{k}_0.jpg", timeout=15))
             if not raw:
                 miss.touch()
                 return None
+            miss.unlink(missing_ok=True)
             tmp = p.with_suffix(".tmp")
             tmp.write_bytes(raw)
             tmp.replace(p)   # 原子替换：并发出图时不会读到半张
