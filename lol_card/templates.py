@@ -11,8 +11,8 @@ from __future__ import annotations
 from .layout import Choose, Gap, HStack, Layers, OneOf, Side, VStack
 from .theme import W
 from .widgets import (Avatar, DetailPanel, Header, KdaLine, LaneCenter, Lanes, Loadout, MatchScoreboard, NameLine,
-                      PosBreakdown, PosLine, Radar, RankLine, RecentStrip, ScoreBox, TeamPowerBar, TeamRow, TeamSide,
-                      TopChamps)
+                      PosBreakdown, PosLine, Radar, RankLine, RecapRows, RecentStrip, ScoreBox, TeamPowerBar, TeamRow,
+                      TeamSide, TopChamps)
 
 MARGIN = 32      # 画布左右留白
 CARD_W = 440     # 玩家卡列宽；中间剩下的宽度给雷达
@@ -76,6 +76,15 @@ MATCH_PAGE = VStack([
     ], pad=MARGIN),
 ])
 
+# ---- 对局清算：顶栏 + 比分条（两行，占 96）+ 五行对位
+# 顶栏高 96，比分条第一行叠在顶栏中间；第二行（经济、资源）放在顶栏下面，Layers 把它们画在一起，
+# 所以这一块总高 = 比分条第二行底部（row2_dy 104 + 字高约 34）≈ 140
+RECAP_PAGE = VStack([
+    Layers([Header(), MatchScoreboard(height=140)]),
+    Gap(4),
+    RecapRows(),
+])
+
 # ---- 5v5 全队页面：顶栏 + 战力条 + 五路，每路 [左玩家条 | 位置对比 | 右玩家条]
 TEAM_ROW_W = 680
 TEAM_PAGE = VStack([
@@ -95,5 +104,6 @@ TEAM_PAGE = VStack([
 TEMPLATES = {
     "card": CARD_PAGE,
     "match": MATCH_PAGE,
+    "recap": RECAP_PAGE,
     "team": TEAM_PAGE,
 }

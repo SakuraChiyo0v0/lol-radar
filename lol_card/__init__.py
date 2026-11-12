@@ -14,8 +14,9 @@
 数据由仓库根目录的 lol_radar.py 取，这里只画。
 """
 from .assets import Assets
-from .render import render, render_team
+from .render import render, render_recap, render_team
 from .scoring import comment, score, team_avg, title_of
 from .theme import TEAM_ORDER
 
-__all__ = ["Assets", "render", "render_team", "score", "title_of", "comment", "team_avg", "TEAM_ORDER"]
+__all__ = ["Assets", "render", "render_recap", "render_team", "score", "title_of", "comment", "team_avg",
+           "TEAM_ORDER"]

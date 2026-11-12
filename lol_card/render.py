@@ -50,6 +50,16 @@ def render(players: list[dict], out: Path, meta: dict, assets: Assets | None = N
     _save(ctx.img, out)
 
 
+def render_recap(lanes: list[tuple[dict | None, dict | None]], out: Path, meta: dict,
+                 assets: Assets | None = None, template: str | None = None) -> None:
+    """对局清算：lanes = 最多 5 行 (蓝方 card, 红方 card)，card 见 widgets/recap.py。
+    meta: title, scoreboard（lol_radar.match_teams 的结果）, laned（峡谷 True / 乱斗 False）, queue_name。
+    每行自己铺原画，整页背景用原来的深蓝渐变，不再叠一层原画。"""
+    ctx = Ctx(background().convert("RGBA"), assets or Assets(), {**meta, "lanes": lanes}, [])
+    draw_page(ctx, _page(template, meta, "recap"), Box(0, 0, W, H))
+    _save(ctx.img, out)
+
+
 def render_team(left: list[dict | None], right: list[dict | None], out: Path, meta: dict,
                 assets: Assets | None = None, template: str | None = None) -> None:
     """left/right：按 TEAM_ORDER 排好的 5 个玩家（缺人给 None）。每人需要：

@@ -4,11 +4,13 @@ from .header import Header
 from .player import (Avatar, DetailPanel, KdaLine, Loadout, NameLine, PosBreakdown, PosLine,
                      RankLine, RecentStrip, ScoreBox, TopChamps)
 from .radar import Radar
+from .recap import RecapRows
 from .scoreboard import MatchScoreboard
 from .team import Lanes, LaneCenter, TeamPowerBar, TeamRow, TeamSide
 
 __all__ = [
     "Header", "Avatar", "NameLine", "RankLine", "KdaLine", "PosLine", "Loadout", "TopChamps",
-    "PosBreakdown", "ScoreBox", "RecentStrip", "DetailPanel", "Radar", "MatchScoreboard", "TeamPowerBar", "Lanes",
+    "PosBreakdown", "ScoreBox", "RecentStrip", "DetailPanel", "Radar", "MatchScoreboard", "RecapRows",
+    "TeamPowerBar", "Lanes",
     "TeamSide", "TeamRow", "LaneCenter",
 ]

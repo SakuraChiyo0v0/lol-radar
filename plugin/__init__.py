@@ -38,7 +38,7 @@ PYTHON = _env("LOL_RADAR_PYTHON", "python3")
 KEEP_SECONDS = int(_env("LOL_RADAR_TOOL_KEEP", str(3 * 86400)))   # 出过的图保留多久，之后下次调用顺手清掉
 TIMEOUT = int(_env("LOL_RADAR_TOOL_TIMEOUT", "240"))              # 冷启动建 30 天池子约 75 秒，留足余量
 
-MODES = ("duel", "overall", "champ", "match", "team", "aram")
+MODES = ("duel", "overall", "champ", "match", "team", "aram", "recap")
 # 和 lol_radar.py 的 QUEUES 对应：rift=峡谷全部分路局（默认），solo/flex/ranked/normal=排位/匹配，aram/kiwi=乱斗
 QUEUES = ("rift", "solo", "flex", "ranked", "normal", "aram", "kiwi")
 NO_LANE = ("aram", "kiwi")
@@ -134,8 +134,8 @@ def build_argv(params: dict, out: str) -> list[str]:
         raise ValueError("乱斗没有分路，不能指定 position")
     if mode == "champ" and not (champion and players):
         raise ValueError("champ 模式需要 champion 和 players")
-    if mode == "match" and not match_id:
-        raise ValueError("match 模式需要 match_id")
+    if mode in ("match", "recap") and not match_id:
+        raise ValueError(f"{mode} 模式需要 match_id")
     if live and not _allow_live():
         raise ValueError("这里不开放读客户端实时对局（live）。可以给 match_id 用库里已有的对局出全队图")
     if mode == "team" and not (live or match_id):
@@ -152,7 +152,7 @@ def build_argv(params: dict, out: str) -> list[str]:
         argv += ["--champion", champion]
     if position:
         argv += ["--position", position]
-    if queue and mode != "match":
+    if queue and mode not in ("match", "recap"):   # 单局和清算的队列由那一局自己决定
         argv += ["--queue", queue]
     for key, flag, lo, hi in (("days", "--days", 1, 365), ("games", "--games", 1, 500),
                               ("pool_days", "--pool-days", 1, 365), ("min_games", "--min-games", 1, 100)):
@@ -202,7 +202,9 @@ def lol_radar(params, **kwargs) -> str:
         "instruction": ("把 reply_line 原样单独放进最终回复（不要改路径、不要放进代码块），平台会把它发成图片。"
                         "再用一两句话说清结论：谁评分高、最大差距在哪一维、样本少（标红）的要提醒只是参考。"
                         "单局（match）：哪方赢、谁在哪方以 summary.result 和 players[].side / win 为准，"
-                        "图上蓝方固定在左、红方在右；不要从评分高低推断谁赢了。"),
+                        "图上蓝方固定在左、红方在右；不要从评分高低推断谁赢了。"
+                        "清算（recap）：胜负以 summary.result 为准，MVP 看 summary.mvp，每路两边看 summary.lanes；"
+                        "可以点名 MVP 和差距最大的那一路。"),
     }, ensure_ascii=False)
 
 
@@ -214,8 +216,10 @@ SCHEMA = {
         "出英雄联盟能力雷达 / 对位卡图片（八维同位置百分位 + 0–10 综合评分 + 称号）。"
         "用户想看「某人/两个人的水平」「战前对位谁强」「这把打得怎么样」「我们队和对面谁强」时用。"
         "mode：duel=两人同位置近期对比（默认，单人就是个人雷达）；overall=整体实力，五个位置分别算再加权；"
-        "champ=只比同一个英雄；match=某一局里同位置两人的本场发挥；team=5v5 全队战力；"
+        "champ=只比同一个英雄；match=某一局里同位置两人的本场发挥；team=5v5 全队战力（按近期数据，不是这一局）；"
+        "recap=对局清算，一局十个人这一局的发挥，五行对位、标出 MVP（峡谷按分路，乱斗按评分配对）；"
         "aram=乱斗对比（duel + queue=aram/kiwi 的简写）。"
+        "「这把谁 carry / 谁背锅 / 复盘一下这局 / 清算」用 recap；只问某条路用 match。"
         "queue 决定和谁比，能和模式自由组合：「排位里谁强」= duel + ranked，「海克斯乱斗对比」= duel + kiwi，"
         "「单排 EZ 谁玩得好」= champ + solo。用户说「乱斗」「海克斯」时多半是海克斯乱斗（kiwi），没局数再换 aram。"
         "图上标「比较池小」时要提醒用户百分位只是参考。"
@@ -235,14 +239,14 @@ SCHEMA = {
             "games": {"type": "integer", "description": "每人最多取多少局，默认 20（overall 默认 50），1–500"},
             "pool_days": {"type": "integer", "description": "同位置比较池的时间窗（天），默认 min(days, 30)。一般不用填"},
             "champion": {"type": "string", "description": "champ 模式用：英雄英文 id / 中文名 / 称号 / 常用简称（EZ、女警…）"},
-            "match_id": {"type": "string", "description": "match 或 team 模式用：对局 ID，例如 HN1_1234567891"},
+            "match_id": {"type": "string", "description": "match / recap / team 模式用：对局 ID，例如 HN1_1234567891"},
             "live": {"type": "boolean", "description": "team 模式：从用户 PC 客户端读当前选人/对局的 10 个人（需要 PC 开着且在选人或游戏中）"},
             "min_games": {"type": "integer", "description": "少于这么多局标红「样本少」，默认 5"},
             "queue": {"type": "string", "enum": list(QUEUES),
                       "description": ("和谁比，能和 duel/champ/overall/team 任意组合：rift=峡谷全部分路局（默认）；"
                                       "solo=单双排；flex=灵活排位；ranked=单双排+灵活；normal=匹配；"
                                       "aram=普通大乱斗；kiwi=海克斯乱斗（乱斗只能配 duel/champ/aram）。"
-                                      "match 模式不用填，按那一局自己的队列")},
+                                      "match / recap 模式不用填，按那一局自己的队列")},
         },
         "required": [],
     },

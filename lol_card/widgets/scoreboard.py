@@ -26,9 +26,10 @@ class MatchScoreboard(Node):
     width: int = 640      # 第二行最多这么宽，放不下就少列几项
     row2_dy: int = 104    # 第二行距框顶多少（顶栏高 96，雷达最上面的轴标签在框顶下约 170）
     item_gap: int = 30
+    height: int = 0       # 占多少排布高度。单局页叠在顶栏上（0）；清算页单独占一行，下面紧接五行对位
 
     def measure(self, ctx, p, w) -> int:
-        return 0   # 叠加层，不占高度
+        return self.height
 
     def draw(self, ctx: Ctx, p, box: Box) -> None:
         sb = ctx.meta.get("scoreboard") or {}

@@ -12,6 +12,8 @@
   # team：5v5 全队战力。--live 从 PC 客户端读当前对局/选人；--match-id 用库里的对局
   lol_radar.py --mode team --live
   lol_radar.py --mode team --match-id HN1_1234567891
+  # recap：对局清算，一局十个人的本局能力（峡谷按分路对位，乱斗按评分配对）
+  lol_radar.py --mode recap --match-id HN1_1234567891
 
 八维（全部按同位置百分位归一，50=中位）：
   伤害占比 / 伤害转化 / 经济每分 / 补刀每分 / 参团率 / 视野每分 / KDA / 承伤占比
@@ -668,6 +670,50 @@ def match_teams(match_id: str) -> dict:
     return {"teams": t, "duration": dur}
 
 
+def score_rows(rows: list[dict], curves: dict, aram_tag: str | None) -> list[dict]:
+    """单局里每个人的八维数值和同位置分位（乱斗：和同模式全体比），以及溢出比例 fracs。
+    单局对位和对局清算共用这一份算法。"""
+    out = []
+    for r in rows:
+        gm = game_metrics(r)
+        pos = aram_tag or r["pos"]
+        if aram_tag:
+            mins = max(r["tp"] / 60, 1)
+            gm = {k: gm[k] for k in ARAM_KEYS if k in gm} | {"dmg_per_min": r["dmg"] / mins}
+        curve = curves.get(pos, {})
+        pc = {k: pct_from_curve(gm[k], curve.get(k, [])) for k in gm}
+        fcs = {}
+        for k in gm:
+            cv, p = curve.get(k, []), pc[k]
+            if len(cv) >= 99 and gm[k] > cv[98]:
+                p90, p99 = cv[89], cv[98]
+                span = (p99 - p90) or max(abs(p99) * 0.02, 1e-9)
+                fcs[k] = 1.0 + min(0.45, 0.15 + (gm[k] - p99) / span * 0.20)
+            else:
+                fcs[k] = max(0.04, p / 95.0) if p <= 95 else 1.0
+        out.append({"row": r, "pos": pos, "metrics": gm, "pcts": pc, "fracs": fcs})
+    return out
+
+
+def recap_pairs(scored: list[dict], laned: bool) -> list[tuple[dict | None, dict | None]]:
+    """清算图的五行：峡谷按位置配（上 / 野 / 中 / 下 / 辅，缺位置的放最后），
+    乱斗没有分路，两队各按本局评分从高到低，第 1 配第 1。"""
+    from lol_card.scoring import score as _score
+    blue = [s for s in scored if s["row"]["team"] == BLUE]
+    red = [s for s in scored if s["row"]["team"] == RED]
+    for s in scored:
+        s["score"] = _score(s["pcts"], s["pos"])
+    if laned:
+        order = {p: i for i, p in enumerate(POSITIONS)}
+        key = lambda s: order.get(s["pos"], 9)   # noqa: E731
+    else:
+        key = lambda s: -s["score"]   # noqa: E731
+    blue.sort(key=key)
+    red.sort(key=key)
+    n = max(len(blue), len(red))
+    return [(blue[i] if i < len(blue) else None, red[i] if i < len(red) else None) for i in range(n)][:5]
+
+
 def pick_pair(rows: list[dict], players: list[str] | None, position: str | None) -> tuple[str, list[dict]]:
     """单局模式选人：先按名字找人、用他的位置；没给名字才按 --position 取该位置双方。"""
     if players:
@@ -949,10 +995,10 @@ def main() -> int:
     ap.add_argument("--out", default=str(CFG.DEFAULT_OUT), help="出图路径（默认 LOL_RADAR_OUT）")
     ap.add_argument("--refresh", action="store_true", help="强制重建样本池（默认缓存 12 小时）")
     ap.add_argument("--match-id", default=None, help="单局模式：对比这一局同位置的两个人")
-    ap.add_argument("--mode", choices=["duel", "match", "champ", "team", "overall", "aram"], default=None,
+    ap.add_argument("--mode", choices=["duel", "match", "champ", "team", "overall", "aram", "recap"], default=None,
                     help="图怎么排：duel=1–2 人近期对比；match=单局；champ=只比同一个英雄；team=5v5 全队；"
-                         "overall=整体实力。和 --queue 组合，例如 duel + kiwi = 海克斯乱斗对比。"
-                         "aram = duel + --queue aram 的简写")
+                         "overall=整体实力；recap=对局清算（一局十人本局能力，峡谷/乱斗都行，要 --match-id）。"
+                         "和 --queue 组合，例如 duel + kiwi = 海克斯乱斗对比。aram = duel + --queue aram 的简写")
     ap.add_argument("--champion", default=None, help="champ 模式：英雄（英文 id / 中文名 / 称号）")
     ap.add_argument("--live", action="store_true", help="team 模式：从 PC 客户端读当前对局/选人")
     ap.add_argument("--pool-days", type=int, default=None,
@@ -983,6 +1029,11 @@ def main() -> int:
         ap.error("--pool-days 取 1–365")
     if a.mode == "team":
         return team_mode(a)
+    if a.mode == "recap":
+        # 队列按那一局自己的（峡谷 / 乱斗自动识别），--queue 不用给
+        if not (1 <= a.days <= 365):
+            ap.error("--days 取 1–365")
+        return recap_mode(a)
     if a.mode == "champ" and not (a.champion and a.players):
         ap.error("champ 模式需要 --champion 和 --players")
     if a.mode == "match" and not a.match_id:
@@ -1029,30 +1080,12 @@ def main() -> int:
         # 名字在红方时左边就成了红方的人却画成蓝色，看图分不清谁是哪边
         pair = blue_first(pair)
         board = match_teams(a.match_id)
-        stats, pcts, notes, fracs = [], [], [], []
-        for r in pair:
-            gm = game_metrics(r)
-            if pos in ARAM_QUEUES.values():
-                mins = max(r["tp"] / 60, 1)
-                gm = {k: gm[k] for k in ARAM_KEYS if k in gm} | {"dmg_per_min": r["dmg"] / mins}
-            curve = curves.get(r["pos"], {})
-            pc = {k: pct_from_curve(gm[k], curve.get(k, [])) for k in gm}
-            stats.append({"name": f"{r['name']} · {r['champ']}", "pos": r["pos"], "games": 1, **gm})
-            pcts.append(pc)
-            fcs = {}
-            for k in gm:
-                cv = curve.get(k, [])
-                p = pc[k]
-                if len(cv) >= 99:
-                    p90, p99 = cv[89], cv[98]
-                    v = gm[k]
-                    if v > p99:
-                        span = (p99 - p90) or max(abs(p99) * 0.02, 1e-9)
-                        fcs[k] = 1.0 + min(0.45, 0.15 + (v - p99) / span * 0.20)
-                        continue
-                fcs[k] = max(0.04, p / 95.0) if p <= 95 else 1.0
-            fracs.append(fcs)
-            notes.append(f"同位置样本 {counts.get(r['pos'], 0)} 局")
+        scored = score_rows(pair, curves, aram_tag)
+        stats = [{"name": f"{s['row']['name']} · {s['row']['champ']}", "pos": s["row"]["pos"], "games": 1,
+                  **s["metrics"]} for s in scored]
+        pcts = [s["pcts"] for s in scored]
+        fracs = [s["fracs"] for s in scored]
+        notes = [f"同位置样本 {counts.get(s['row']['pos'], 0)} 局" for s in scored]
         from lol_radar_card import render
         exs = pmap(lambda r: extras(r.get("puuid"), a.days, r["pos"]), pair)
         cards = []
@@ -1100,6 +1133,57 @@ def main() -> int:
         _, champ_key, champ_cn = hit
 
     return compare_mode(a, a.q, position, champ_key, champ_cn)
+
+
+def recap_mode(a) -> int:
+    """对局清算：一局十个人的本局能力，五行对位（峡谷按分路，乱斗按评分配对），左蓝右红。
+    评分和单局对位是同一套：本局八维在同位置（乱斗：同模式全体）里的分位，按位置加权成 0–10。"""
+    if not a.match_id or not RE_MATCH_ID.match(a.match_id):
+        raise SystemExit("recap 模式需要合法的 --match-id（形如 HN1_1234567890）")
+    rows = match_rows(a.match_id)
+    if not rows:
+        raise SystemExit(f"找不到对局 {a.match_id}")
+    queue = rows[0].get("queue")
+    aram_tag = ARAM_QUEUES.get(queue)
+    laned = aram_tag is None
+    if laned and all(r["pos"] not in POSITIONS for r in rows):
+        raise SystemExit(f"这一局（queue {queue}）没有分路数据，既不是峡谷也不是大乱斗/海克斯乱斗，暂不支持")
+    curves, _ = quantiles(a.days, refresh=a.refresh)
+    pairs = recap_pairs(score_rows(rows, curves, aram_tag), laned)
+    board = match_teams(a.match_id)
+
+    def card(s):
+        if s is None:
+            return None
+        r = s["row"]
+        return {"name": r["name"], "champion": r["champ"], "pos": s["pos"], "lane_pos": r["pos"],
+                "team": r["team"], "win": r["win"] == "t", "score": s["score"], "pcts": s["pcts"],
+                "kda_line": f"{r['k']:.0f} / {r['d']:.0f} / {r['a']:.0f}"}
+
+    lanes = [(card(b), card(r_)) for b, r_ in pairs]
+    from lol_card import render_recap
+    render_recap(lanes, Path(a.out), {
+        "title": "对局清算 · 五路对位" if laned else "对局清算 · 按评分配对",
+        "scoreboard": board, "laned": laned,
+        "queue_name": "峡谷" if laned else ("海克斯乱斗" if aram_tag == "KIWI" else "大乱斗"),
+    })
+    T = board["teams"]
+    winner = next((tid for tid, x in T.items() if x["win"]), None)
+    everyone = [c for pr in lanes for c in pr if c]
+    mvp = max(everyone, key=lambda c: c["score"]) if everyone else None
+    print(json.dumps({
+        "out": a.out, "mode": "recap", "match": a.match_id, "laned": laned,
+        "result": {"winner": SIDE_CN.get(winner, "?"),
+                   "kills": {SIDE_CN[k]: v["kills"] for k, v in T.items() if k in SIDE_CN},
+                   "duration_min": round(board["duration"] / 60) if board["duration"] else None},
+        "mvp": {"name": mvp["name"], "champion": mvp["champion"], "side": SIDE_CN.get(mvp["team"], "?"),
+                "score": mvp["score"]} if mvp else None,
+        "lanes": [{"pos": (b or r_ or {}).get("lane_pos") if laned else f"第{i + 1}",
+                   "blue": {"name": b["name"], "champion": b["champion"], "score": b["score"], "kda": b["kda_line"]} if b else None,
+                   "red": {"name": r_["name"], "champion": r_["champion"], "score": r_["score"], "kda": r_["kda_line"]} if r_ else None}
+                  for i, (b, r_) in enumerate(lanes)],
+    }, ensure_ascii=False))
+    return 0
 
 
 def compare_mode(a, q: Queue, position: str | None, champ_key: str | None, champ_cn: str | None) -> int:
