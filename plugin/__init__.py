@@ -200,7 +200,9 @@ def lol_radar(params, **kwargs) -> str:
         "summary": summary,
         "reply_line": f"MEDIA:{out}",
         "instruction": ("把 reply_line 原样单独放进最终回复（不要改路径、不要放进代码块），平台会把它发成图片。"
-                        "再用一两句话说清结论：谁评分高、最大差距在哪一维、样本少（标红）的要提醒只是参考。"),
+                        "再用一两句话说清结论：谁评分高、最大差距在哪一维、样本少（标红）的要提醒只是参考。"
+                        "单局（match）：哪方赢、谁在哪方以 summary.result 和 players[].side / win 为准，"
+                        "图上蓝方固定在左、红方在右；不要从评分高低推断谁赢了。"),
     }, ensure_ascii=False)
 
 

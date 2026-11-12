@@ -228,10 +228,24 @@ class Choose(Node):
         self._pick(ctx).draw(ctx, p, box)
 
 
+@dataclass
+class Layers(Node):
+    """几个节点画在同一个框里，后面的压在前面的上面；高度取最高的那个。
+    用来把比分条这种叠加层画在顶栏上（叠加层的 measure 返回 0，不改变排布）。"""
+    children: list
+
+    def measure(self, ctx, p, w) -> int:
+        return max((c.measure(ctx, p, w) for c in self.children), default=0)
+
+    def draw(self, ctx, p, box) -> None:
+        for c in self.children:
+            c.draw(ctx, p, box)
+
+
 def draw_page(ctx: Ctx, page: Node, box: Box) -> None:
     page.draw(ctx, None, box)
     if ctx.bottom > box.y1:
         _warn(f"布局超出画布：内容画到 y={ctx.bottom}，画布高 {box.y1}，底部会被裁掉")
 
 
-__all__ = ["Ctx", "Box", "Node", "Gap", "VStack", "HStack", "Side", "OneOf", "Choose", "draw_page"]
+__all__ = ["Ctx", "Box", "Node", "Gap", "VStack", "HStack", "Side", "OneOf", "Choose", "Layers", "draw_page"]

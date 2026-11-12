@@ -614,6 +614,8 @@ def match_rows(match_id: str) -> list[dict]:
     out = []
     for r in psql(sql):
         tp = float(r[10] or 0) or 1
+        r = list(r)
+        r[16] = int(r[16]) if r[16] not in (None, "") else None   # team_id：100 蓝方，200 红方
         out.append({
             "pos": r[0] or "?", "champ": r[1], "name": r[15] or "?",
             "k": float(r[2] or 0), "d": float(r[3] or 0), "a": float(r[4] or 0),
@@ -629,6 +631,41 @@ def match_rows(match_id: str) -> list[dict]:
             "queue": int(r[24]) if len(r) > 24 and r[24] else None,
         })
     return out
+
+
+BLUE, RED = 100, 200
+SIDE_CN = {BLUE: "蓝方", RED: "红方"}
+
+
+def blue_first(pair: list[dict]) -> list[dict]:
+    """单局两个人：蓝方（team 100）放左边，红方（200）放右边，和图上蓝/红配色、客户端左右一致。
+    同一队的两个人（跨位置比较）保持原来的顺序。"""
+    if len(pair) == 2 and pair[0].get("team") == RED and pair[1].get("team") == BLUE:
+        return [pair[1], pair[0]]
+    return pair
+
+
+def match_teams(match_id: str) -> dict:
+    """整局的比分条数据：每队的人头、经济、胜负和资源（塔 / 小龙 / 先锋 / 虚空巢虫 / 大龙 / 水晶）。
+    资源来自 lol.match_team.objectives；没有这一行（老数据或乱斗）就只给人头、经济、胜负。"""
+    mid = sql_str(match_id)
+    t: dict[int, dict] = {}
+    for tid, k, d, a, gold, win in psql(f"""
+            select team_id, sum(kills), sum(deaths), sum(assists), sum(gold_earned), bool_or(win)
+            from lol.match_participant where match_id = {mid} group by 1"""):
+        t[int(tid)] = {"kills": int(k or 0), "deaths": int(d or 0), "assists": int(a or 0),
+                       "gold": int(gold or 0), "win": win == "t"}
+    for tid, obj in psql(f"select team_id, objectives::text from lol.match_team where match_id = {mid}"):
+        if int(tid) in t and obj:
+            try:
+                o = json.loads(obj)
+            except ValueError:
+                continue
+            t[int(tid)]["obj"] = {k: int((v or {}).get("kills") or 0) for k, v in o.items()}
+            t[int(tid)]["first"] = {k for k, v in o.items() if (v or {}).get("first")}
+    r = psql(f"select duration_sec from lol.match where match_id = {mid}")
+    dur = int(r[0][0]) if r and r[0][0] else None
+    return {"teams": t, "duration": dur}
 
 
 def pick_pair(rows: list[dict], players: list[str] | None, position: str | None) -> tuple[str, list[dict]]:
@@ -760,15 +797,16 @@ def team_mode(a) -> int:
         rows = match_rows(a.match_id)
         if not rows:
             raise SystemExit(f"找不到对局 {a.match_id}")
-        teams = sorted({r["team"] for r in rows})
         conv = lambda t: [{"puuid": r["puuid"], "name": r["name"], "pos": r["pos"], "champion": r["champ"]}
                           for r in rows if r["team"] == t]
-        ally, enemy = conv(teams[0]), conv(teams[-1])
+        # 和单局一样：蓝方固定在左（蓝色）、红方在右。给了名字时只在名字所在那一方后面标「我方」，
+        # 不再把那一方挪到左边——挪过去还是画成蓝色，红方的人就被画成了蓝方
+        ally, enemy = conv(BLUE), conv(RED)
+        mine = None
         if a.players:
             want = {n.split("#")[0] for n in a.players}
-            if any(e["name"].split("#")[0] in want for e in enemy):
-                ally, enemy = enemy, ally
-        sides = ("蓝色方", "红色方") if not a.players else ("我方", "敌方")
+            mine = next((r["team"] for r in rows if r["name"].split("#")[0] in want), None)
+        sides = tuple(SIDE_CN[t] + ("（我方）" if t == mine else "") for t in (BLUE, RED))
         sub_head = f"{a.match_id} 的十人 · 按各自近期数据（含本局）"
 
     def order(team):
@@ -987,6 +1025,10 @@ def main() -> int:
             pair = pair[:2]
         else:
             pos, pair = pick_pair(rows, a.players, position)
+        # 左右按阵营定：蓝方在左（蓝色），红方在右（红色）。原来按「给的名字在左」，
+        # 名字在红方时左边就成了红方的人却画成蓝色，看图分不清谁是哪边
+        pair = blue_first(pair)
+        board = match_teams(a.match_id)
         stats, pcts, notes, fracs = [], [], [], []
         for r in pair:
             gm = game_metrics(r)
@@ -1024,15 +1066,28 @@ def main() -> int:
                 "spells": r["spells"],
                 "keystone": r["keystone"], "sub_style": r["sub_style"], "win": r["win"] == "t",
                 "kda_line": f"{r['k']:.0f} / {r['d']:.0f} / {r['a']:.0f}",
+                "team": r.get("team"),
             })
         render(cards, Path(a.out), {
             "title": "单局对位 · 同位置百分位",
             "subtitle": f"{a.match_id} · 对局时长 {pair[0]['tp'] / 60:.0f} 分钟 · 分位池：最近 {a.days} 天同位置单局",
             "badge": POS_BADGE.get(pos, pos),
             "footer": "外圈 = 同位置 P95（满格） · 超过 P99 才溢出 · 评分 = 八维分位按位置加权（0–10）",
+            "scoreboard": board,
+            "template": "match",
         })
-        print(json.dumps({"out": a.out, "match": a.match_id, "pos": pos, "players": [
-            {"name": s["name"], "pct": {k: round(v, 1) for k, v in pc.items()}} for s, pc in zip(stats, pcts)]},
+        T = board["teams"]
+        winner = next((tid for tid, x in T.items() if x["win"]), None)
+        print(json.dumps({
+            "out": a.out, "match": a.match_id, "pos": pos,
+            # 给机器人看的结论：哪方赢、比分，每个人在哪方、赢没赢——别再说反
+            "result": {"winner": SIDE_CN.get(winner, "?"),
+                       "kills": {SIDE_CN[k]: v["kills"] for k, v in T.items() if k in SIDE_CN},
+                       "duration_min": round(board["duration"] / 60) if board["duration"] else None},
+            "players": [{"name": r["name"], "champion": r["champ"], "side": SIDE_CN.get(r.get("team"), "?"),
+                         "win": r["win"] == "t", "kda": f"{r['k']:.0f}/{r['d']:.0f}/{r['a']:.0f}",
+                         "pct": {k: round(v, 1) for k, v in pc.items()}}
+                        for r, pc in zip(pair, pcts)]},
             ensure_ascii=False))
         return 0
 

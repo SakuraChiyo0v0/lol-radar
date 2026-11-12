@@ -8,10 +8,11 @@
 """
 from __future__ import annotations
 
-from .layout import Choose, Gap, HStack, OneOf, Side, VStack
+from .layout import Choose, Gap, HStack, Layers, OneOf, Side, VStack
 from .theme import W
-from .widgets import (Avatar, DetailPanel, Header, KdaLine, LaneCenter, Lanes, Loadout, NameLine, PosBreakdown,
-                      PosLine, Radar, RankLine, RecentStrip, ScoreBox, TeamPowerBar, TeamRow, TeamSide, TopChamps)
+from .widgets import (Avatar, DetailPanel, Header, KdaLine, LaneCenter, Lanes, Loadout, MatchScoreboard, NameLine,
+                      PosBreakdown, PosLine, Radar, RankLine, RecentStrip, ScoreBox, TeamPowerBar, TeamRow, TeamSide,
+                      TopChamps)
 
 MARGIN = 32      # 画布左右留白
 CARD_W = 440     # 玩家卡列宽；中间剩下的宽度给雷达
@@ -63,6 +64,18 @@ CARD_PAGE = VStack([
     ], pad=MARGIN),
 ])
 
+# ---- 单局页面：和对位卡一样，只是顶栏上叠一条比分（胜负 + 人头 + 经济 + 资源）
+# 比分条叠在顶栏中间和下面的空档里，不占排布高度，所以下面的玩家卡、雷达位置都不动
+MATCH_PAGE = VStack([
+    Layers([Header(), MatchScoreboard()]),
+    Gap(28),
+    HStack([
+        (CARD_W, Side(0, PLAYER_CARD)),
+        (None, Radar(score_badge=False)),
+        (CARD_W, Choose(two_players, Side(1, PLAYER_CARD), Side(0, DetailPanel()))),
+    ], pad=MARGIN),
+])
+
 # ---- 5v5 全队页面：顶栏 + 战力条 + 五路，每路 [左玩家条 | 位置对比 | 右玩家条]
 TEAM_ROW_W = 680
 TEAM_PAGE = VStack([
@@ -81,5 +94,6 @@ TEAM_PAGE = VStack([
 # 或在 meta 里写 "template": "match"。
 TEMPLATES = {
     "card": CARD_PAGE,
+    "match": MATCH_PAGE,
     "team": TEAM_PAGE,
 }
