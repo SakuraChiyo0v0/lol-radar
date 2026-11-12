@@ -75,6 +75,64 @@ def background() -> Image.Image:
     return Image.composite(Image.new("RGB", (W, H), (40, 80, 150)), bg, glow)
 
 
+SPLASH_W = 900          # 每侧原画铺多宽
+SPLASH_FADE = (560, 820)  # 左侧原画从 x=560 开始淡出、到 820 完全消失；右侧对称
+SPLASH_LUMA = 34        # 压暗后原画的平均亮度（0–255）。各张原画亮暗差很多，统一拉到这个值，字才都看得清
+                        # 之后还会把 >70 的高光压成 1/3 斜率，局部亮块也不会盖住文字
+SPLASH_TINT = 0.18      # 往本侧颜色（蓝 / 红）偏多少
+
+
+def _fade_mask(x0: int, x1: int, left: bool) -> Image.Image:
+    """水平渐变掩膜：左侧版本在 x0 以左全不透明、x1 以右全透明；右侧版本镜像。"""
+    row = Image.new("L", (W, 1))
+    px = row.load()
+    for x in range(W):
+        xx = x if left else W - 1 - x
+        t = 0.0 if xx <= x0 else (1.0 if xx >= x1 else (xx - x0) / (x1 - x0))
+        px[x, 0] = int(255 * (1 - t) ** 1.4)
+    return row.resize((W, H))
+
+
+def _splash_side(art: Image.Image, side: int, color: tuple) -> Image.Image:
+    """一侧的原画层：按高度铺满，取人物所在的中间偏右那段；右侧镜像让人物朝向中间。
+    模糊一点去掉细节（不和前景抢），亮度统一压到 SPLASH_LUMA，再往本侧颜色偏一点。"""
+    from PIL import ImageEnhance, ImageOps, ImageStat
+    s = art.resize((max(SPLASH_W, int(art.width * H / art.height)), H), Image.LANCZOS)
+    # centered 原画人物大多在中间：取中间往右的一段，左边的人就站在画布左缘附近
+    x = max(0, min(s.width - SPLASH_W, s.width // 2 - SPLASH_W // 3))
+    part = s.crop((x, 0, x + SPLASH_W, H))
+    if side == 1:
+        part = ImageOps.mirror(part)
+    part = part.filter(ImageFilter.GaussianBlur(5))
+    part = ImageEnhance.Color(part).enhance(0.8)
+    luma = ImageStat.Stat(part.convert("L")).mean[0] or 1
+    part = ImageEnhance.Brightness(part).enhance(min(1.0, SPLASH_LUMA / luma))
+    part = Image.blend(part, Image.new("RGB", part.size, color), SPLASH_TINT)
+    # 平均亮度压下去了，局部亮块（火光、高光）还可能盖住文字：把最亮的地方再削平
+    part = part.point(lambda v: v if v < 70 else 70 + (v - 70) // 3)
+    layer = Image.new("RGB", (W, H), C_BG0)
+    layer.paste(part, (0, 0) if side == 0 else (W - SPLASH_W, 0))
+    return layer
+
+
+def splash_background(arts: list, colors: list) -> Image.Image:
+    """两侧铺英雄原画的背景：原来的深蓝渐变打底，左右各一张原画往中间淡出，中间留给雷达。
+    arts[i] 为 None 的那一侧就不铺（保持原背景）；两侧都没有时和 background() 完全一样。"""
+    bg = background()
+    if not any(arts):
+        return bg
+    for side, art in enumerate(arts[:2]):
+        if art is None:
+            continue
+        bg = Image.composite(_splash_side(art, side, colors[side]), bg, _fade_mask(*SPLASH_FADE, side == 0))
+    # 四角压暗，视线收到中间
+    m = Image.new("L", (W, H), 0)
+    ImageDraw.Draw(m).ellipse([-W * 0.15, -H * 0.25, W * 1.15, H * 1.25], fill=255)
+    m = m.filter(ImageFilter.GaussianBlur(160))
+    from PIL import ImageEnhance
+    return Image.composite(bg, ImageEnhance.Brightness(bg).enhance(0.6), m)
+
+
 def dashed(d, a, b, fill, width, dash=10, gap=7):
     (x1, y1), (x2, y2) = a, b
     L = math.hypot(x2 - x1, y2 - y1)

@@ -10,7 +10,7 @@ import urllib.request
 from PIL import Image
 
 from .config import DDRAGON_CACHE as DD_CACHE
-from .config import DDRAGON_FALLBACK_VERSION
+from .config import DDRAGON_FALLBACK_VERSION, SPLASH_CACHE
 
 DD = "https://ddragon.leagueoflegends.com"
 
@@ -149,6 +149,30 @@ class Assets:
     def champion(self, name: str):
         k = self.champ_key(name)
         return self._img(f"champion/{k}.png", f"{DD}/cdn/{self.ver}/img/champion/{k}.png")
+
+    def splash(self, name: str):
+        """英雄默认原画（centered 版，1280×720，人物在画面中间），背景用。
+        地址不带版本号，缓存在 SPLASH_CACHE 下跨版本复用；下载失败记一个空标记，24 小时内不再重试，
+        免得每张图都卡在超时上。拿不到返回 None。"""
+        if not name:
+            return None
+        k = self.champ_key(name)
+        SPLASH_CACHE.mkdir(parents=True, exist_ok=True)
+        p, miss = SPLASH_CACHE / f"{k}_0.jpg", SPLASH_CACHE / f"{k}_0.miss"
+        if not p.exists():
+            if miss.exists() and time.time() - miss.stat().st_mtime < 86400:
+                return None
+            raw = _get(f"{DD}/cdn/img/champion/centered/{k}_0.jpg", timeout=15)
+            if not raw:
+                miss.touch()
+                return None
+            tmp = p.with_suffix(".tmp")
+            tmp.write_bytes(raw)
+            tmp.replace(p)   # 原子替换：并发出图时不会读到半张
+        try:
+            return Image.open(p).convert("RGB")
+        except Exception:
+            return None
 
     def item(self, item_id: int):
         if not item_id:

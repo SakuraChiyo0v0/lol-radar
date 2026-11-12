@@ -36,6 +36,10 @@ POOL_DIR = _path("LOL_RADAR_POOL_DIR", CACHE_DIR / "radar_pool")
 QUANT_FILE = _path("LOL_RADAR_QUANT_FILE", CACHE_DIR / "radar_quantiles.json")
 CACHE_TTL = int(_env("LOL_RADAR_CACHE_TTL", str(12 * 3600)))   # 比较池 / 分位曲线缓存秒数
 DDRAGON_FALLBACK_VERSION = _env("LOL_RADAR_DDRAGON_VERSION", "16.22.1")  # 连不上 ddragon 时用
+# 英雄原画（背景用）。原画地址不带版本号，所以单独一个目录，跨版本复用
+SPLASH_CACHE = _path("LOL_RADAR_SPLASH_CACHE", DDRAGON_CACHE / "splash")
+# 背景要不要铺两侧英雄原画：1 开，0 关（关了就是原来的深蓝渐变）
+SPLASH_BG = _env("LOL_RADAR_SPLASH_BG", "1") not in ("0", "false", "no", "off")
 
 # ---- 字体
 FONT = _path("LOL_RADAR_FONT", HOME / "fonts" / "msyh.ttc")

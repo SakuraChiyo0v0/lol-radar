@@ -5,10 +5,20 @@ from __future__ import annotations
 from pathlib import Path
 
 from .assets import Assets
-from .canvas import background
+from .canvas import background, splash_background
+from .config import SPLASH_BG
 from .layout import Box, Ctx, draw_page
 from .templates import TEMPLATES
-from .theme import H, W
+from .theme import H, SIDE, W
+
+
+def _bg(players: list[dict], assets: Assets, meta: dict):
+    """对位卡的背景：两侧铺各自英雄的原画（单人时只铺左边）。
+    关掉（LOL_RADAR_SPLASH_BG=0 或 meta.splash_bg=False）、没有英雄、原画下载失败，都退回原来的深蓝渐变。"""
+    if not SPLASH_BG or meta.get("splash_bg") is False:
+        return background()
+    arts = [assets.splash(p.get("champion")) if p.get("champion") else None for p in players[:2]]
+    return splash_background(arts, SIDE)
 
 
 def _page(template: str | None, meta: dict, default: str):
@@ -34,7 +44,8 @@ def render(players: list[dict], out: Path, meta: dict, assets: Assets | None = N
     meta: title, badge, template（subtitle/footer 现在不画，留着给调用方记录口径）
     template: TEMPLATES 里的页面名，默认 card
     """
-    ctx = Ctx(background().convert("RGBA"), assets or Assets(), meta, players)
+    assets = assets or Assets()
+    ctx = Ctx(_bg(players, assets, meta).convert("RGBA"), assets, meta, players)
     draw_page(ctx, _page(template, meta, "card"), Box(0, 0, W, H))
     _save(ctx.img, out)
 
