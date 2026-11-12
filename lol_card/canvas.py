@@ -42,6 +42,16 @@ def paste_icon(img: Image.Image, icon: Image.Image | None, box: tuple[int, int, 
             d.rounded_rectangle([x - 1, y - 1, x + s, y + s], r + 1, outline=ring, width=2)
 
 
+def empty_slot(img: Image.Image, box: tuple[int, int, int], r: int = 6) -> None:
+    """空装备栏：半透明的暗底 + 一圈淡描边，像游戏里没放东西的格子。
+    用半透明而不是实心色块：铺了原画的背景也能透出来，不会是一块突兀的平涂色。"""
+    x, y, s = box
+    layer = Image.new("RGBA", (s + 2, s + 2), (0, 0, 0, 0))
+    d = ImageDraw.Draw(layer)
+    d.rounded_rectangle([1, 1, s, s], r, fill=(8, 12, 24, 110), outline=(120, 140, 180, 70), width=1)
+    img.alpha_composite(layer, (x - 1, y - 1))
+
+
 def text_c(d, xy, text, font, fill):
     tw = d.textlength(text, font=font)
     d.text((xy[0] - tw / 2, xy[1]), text, font=font, fill=fill)

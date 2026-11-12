@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..canvas import fit, name_parts, paste_icon, text_c
+from ..canvas import empty_slot, fit, name_parts, paste_icon, text_c
 from ..layout import Box, Ctx, Node, _check_width
 from ..scoring import LABEL, player_score, titles_of
 from ..theme import (C_BG0, C_DIM, C_GOLD, C_LINE, C_LOSE, C_PANEL, C_TEXT, C_TRACK, C_WIN, POS_CN,
@@ -137,10 +137,16 @@ class Loadout(Node):
                 off = (I - self.sub) // 2
                 paste_icon(img, A.rune(p.get("sub_style")), (x + off, y + I + G + off // 2, self.sub), circle=True)
             elif kind == "items":
-                its = list(p.get("items") or [])[:6]
+                # 有装备的往前靠，空格子统一排在后面；空格子画成淡淡的内凹虚框（像游戏里的空栏位），
+                # 不画实心色块——实心块看着像「图没加载出来」
+                its = [int(i) for i in (p.get("items") or [])[:6] if i]
                 for i in range(6):
-                    iid = its[i] if i < len(its) else 0
-                    paste_icon(img, A.item(iid), (x + (i % 3) * (I + G), y + (i // 3) * (I + G), I), r=7)
+                    bx, by = x + (i % 3) * (I + G), y + (i // 3) * (I + G)
+                    icon = A.item(its[i]) if i < len(its) else None
+                    if icon is not None:
+                        paste_icon(img, icon, (bx, by, I), r=7)
+                    else:
+                        empty_slot(img, (bx, by, I), r=7)
             elif kind == "trinket":
                 paste_icon(img, A.item(p.get("trinket") or 0), (x, y + (I + G) // 2, I), circle=True, ring=C_LINE)
             x += w + self.block_gap
