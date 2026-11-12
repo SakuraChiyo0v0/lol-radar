@@ -11,12 +11,22 @@ from ..theme import (C_BG0, C_DIM, C_GOLD, C_LINE, C_LOSE, C_PANEL, C_TEXT, C_TR
                      SIDE, STAT_FMT, TEAM_ORDER, TIER_CN, font, num_font, win_color)
 
 
+DIVISIONS = ("I", "II", "III", "IV")
+
+
 def rank_text(p: dict) -> str:
-    """「#tag · 大师 I 20LP」。"""
+    """「#tag · 钻石 I 36LP」；大师 / 宗师 / 王者没有小段，写成「大师 20LP」。
+    库里这三个段位的 division 存的是 NA，没段位的 tier 是空串，都不能原样上图。"""
     sub = name_parts(p["name"])[1]
     rk = p.get("rank") or {}
-    if rk.get("tier"):
-        sub += f"  ·  {TIER_CN.get(rk['tier'], rk['tier'])} {rk.get('division') or ''} {rk.get('lp', 0)}LP"
+    tier = (rk.get("tier") or "").strip()
+    if tier:
+        div = (rk.get("division") or "").strip().upper()
+        parts = [TIER_CN.get(tier, tier)]
+        if div in DIVISIONS:
+            parts.append(div)
+        parts.append(f"{rk.get('lp', 0)}LP")
+        sub += "  ·  " + " ".join(parts)
     return sub.strip(" ·")
 
 

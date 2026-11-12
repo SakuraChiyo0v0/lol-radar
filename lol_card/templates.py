@@ -58,7 +58,7 @@ CARD_PAGE = VStack([
     Gap(28),
     HStack([
         (CARD_W, Side(0, PLAYER_CARD)),
-        (None, Radar()),
+        (None, Radar(score_badge=False)),    # 两人评分已经在左右评分卡里，中心不再写，免得挡住小的多边形
         (CARD_W, Choose(two_players, Side(1, PLAYER_CARD), Side(0, DetailPanel()))),
     ], pad=MARGIN),
 ])
