@@ -1151,6 +1151,14 @@ def recap_mode(a) -> int:
     curves, _ = quantiles(a.days, refresh=a.refresh)
     pairs = recap_pairs(score_rows(rows, curves, aram_tag), laned)
     board = match_teams(a.match_id)
+    # 十个人的当前段位，一次查完（每人取最新一条）。段位是「现在」的，不是那一局时的
+    pus = [r["puuid"] for r in rows if r.get("puuid")]
+    ranks = {}
+    if pus:
+        for pu, tier, div, lp in psql(
+                "select distinct on (puuid) puuid, tier, division, lp from lol.player_rank "
+                f"where puuid in ({', '.join(sql_str(p) for p in pus)}) order by puuid, updated_at desc"):
+            ranks[pu] = {"tier": tier, "division": div, "lp": int(lp or 0)}
 
     def card(s):
         if s is None:
@@ -1158,7 +1166,8 @@ def recap_mode(a) -> int:
         r = s["row"]
         return {"name": r["name"], "champion": r["champ"], "pos": s["pos"], "lane_pos": r["pos"],
                 "team": r["team"], "win": r["win"] == "t", "score": s["score"], "pcts": s["pcts"],
-                "kda_line": f"{r['k']:.0f} / {r['d']:.0f} / {r['a']:.0f}"}
+                "kda_line": f"{r['k']:.0f} / {r['d']:.0f} / {r['a']:.0f}",
+                "rank": ranks.get(r.get("puuid"))}
 
     lanes = [(card(b), card(r_)) for b, r_ in pairs]
     from lol_card import render_recap

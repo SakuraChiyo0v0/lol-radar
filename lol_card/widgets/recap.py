@@ -1,7 +1,8 @@
 """对局清算的组件：五行对位，每行 [蓝方玩家条 | 中间位置 + 差值 | 红方玩家条]。
 
 数据在 ctx.meta["lanes"]：[(蓝方 card 或 None, 红方 card 或 None)] × 最多 5 行，card 字段：
-  name, champion, pos(分位用的位置键), lane_pos(峡谷真实分路), team, win, score, pcts, kda_line
+  name, champion, pos(分位用的位置键), lane_pos(峡谷真实分路), team, win, score, pcts, kda_line,
+  rank({tier, division, lp} 或 None，当前段位)
 ctx.meta["laned"]：峡谷 True（中间写位置），乱斗 False（中间写「第 N」）。
 """
 from __future__ import annotations
@@ -14,7 +15,7 @@ from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageStat
 from ..canvas import fit, name_parts, paste_icon, text_c, text_r
 from ..layout import Box, Ctx, Node
 from ..scoring import titles_of
-from ..theme import C_DIM, C_GOLD, C_LINE, C_LOSE, C_PANEL, C_TEXT, C_WIN, POS_CN, SIDE, font, num_font
+from ..theme import C_DIM, C_GOLD, C_LINE, C_LOSE, C_PANEL, C_TEXT, C_WIN, POS_CN, SIDE, TIER_CN, font, num_font
 
 EVEN = 0.3          # 两边评分差在这以内算持平
 ROW_LUMA = 40       # 玩家条底下原画的平均亮度：各张原画亮暗差很多，统一到这一档
@@ -23,6 +24,31 @@ ROW_HI = 80         # 再把高于这个的高光压成 1/3 斜率，局部亮�
 
 def _score_color(s: float) -> tuple:
     return C_GOLD if s >= 7 else (C_TEXT if s >= 4 else C_LOSE)
+
+
+# 段位的颜色：按游戏里的段位色调淡一点，在深色底上看得清
+TIER_COLOR = {
+    "IRON": (150, 140, 135), "BRONZE": (190, 140, 110), "SILVER": (175, 190, 205), "GOLD": (230, 195, 110),
+    "PLATINUM": (110, 200, 190), "EMERALD": (90, 200, 130), "DIAMOND": (130, 170, 255),
+    "MASTER": (200, 130, 230), "GRANDMASTER": (240, 110, 110), "CHALLENGER": (250, 215, 120),
+}
+
+
+def _rank_short(rk: dict | None) -> str:
+    """「钻石 I 36LP」；大师以上没有小段写「大师 20LP」；没段位（没打定级或查不到）返回空串，那一行就不画。"""
+    tier = ((rk or {}).get("tier") or "").strip().upper()
+    if not tier:
+        return ""
+    parts = [TIER_CN.get(tier, tier)]
+    div = ((rk or {}).get("division") or "").strip().upper()
+    if div in ("I", "II", "III", "IV"):
+        parts.append(div)
+    parts.append(f"{(rk or {}).get('lp', 0)}LP")
+    return " ".join(parts)
+
+
+def _rank_color(rk: dict | None) -> tuple:
+    return TIER_COLOR.get(((rk or {}).get("tier") or "").strip().upper(), C_DIM)
 
 
 def _row_art(A, champ: str, size: tuple[int, int], side: int):
@@ -152,24 +178,30 @@ class RecapRows(Node):
         paste_icon(img, A.champion(c["champion"]) if c.get("champion") else None, (ax, box.y + 18, S),
                    r=12, ring=SIDE[side])
         d = ImageDraw.Draw(img)
-        fn, fk, ft = font(22, True), num_font(30), font(15, True)
+        fn, fr, fk, ft = font(22, True), font(15), num_font(30), font(15, True)
         name = fit(d, name_parts(c["name"])[0], fn, 200)
+        rank = _rank_short(c.get("rank"))
+        # 一列：名字（y+12）、段位（y+42，小字）、KDA（y+62）、称号（y+104）
         if side == 0:
-            d.text((tx, box.y + 18), name, font=fn, fill=C_TEXT)
-            d.text((tx, box.y + 50), c["kda_line"], font=fk, fill=C_TEXT)
+            d.text((tx, box.y + 12), name, font=fn, fill=C_TEXT)
+            if rank:
+                d.text((tx, box.y + 42), rank, font=fr, fill=_rank_color(c.get("rank")))
+            d.text((tx, box.y + 62), c["kda_line"], font=fk, fill=C_TEXT)
         else:
-            text_r(d, (tx, box.y + 18), name, fn, C_TEXT)
-            text_r(d, (tx, box.y + 50), c["kda_line"], fk, C_TEXT)
+            text_r(d, (tx, box.y + 12), name, fn, C_TEXT)
+            if rank:
+                text_r(d, (tx, box.y + 42), rank, fr, _rank_color(c.get("rank")))
+            text_r(d, (tx, box.y + 62), c["kda_line"], fk, C_TEXT)
         titles = titles_of(c["pcts"], c["pos"], 2)
         if side == 0:
             x = tx
             for t, g in titles:
-                x += _pill(d, x, box.y + 100, t, g, ft) + 6
+                x += _pill(d, x, box.y + 104, t, g, ft) + 6
         else:
             x = tx
             for t, g in reversed(titles):
                 x -= int(d.textlength(t, font=ft)) + 20
-                _pill(d, x, box.y + 100, t, g, ft)
+                _pill(d, x, box.y + 104, t, g, ft)
                 x -= 6
 
         keys = list(c["pcts"])

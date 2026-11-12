@@ -46,6 +46,7 @@ class Assets:
         self._spells: dict[int, str] | None = None
         self._champ_keys: dict[str, str] | None = None
         self._cd: dict | None = None
+        self._local: dict[str, str] | None = None   # 素材库原画索引，第一次用时查
 
     # ---- 版本 / 数据表
     def _version(self) -> str:
@@ -150,21 +151,66 @@ class Assets:
         k = self.champ_key(name)
         return self._img(f"champion/{k}.png", f"{DD}/cdn/{self.ver}/img/champion/{k}.png")
 
+    def _local_index(self) -> dict[str, str]:
+        """素材库里默认皮肤（skin_id = champion_id × 1000）的 centered 原画路径，按英雄 key（小写）索引。
+        一次渲染只查一次库；查不到库（没配数据库、表不存在）就当没有，不影响出图。"""
+        if self._local is None:
+            self._local = {}
+            try:
+                from lol_radar import psql   # 渲染层平时不碰数据库，这里只读一张素材表
+                for key, path in psql(
+                        "select champion_key, local_path from lol.asset_inventory "
+                        "where skin_id = champion_id * 1000 and kind = 'splash' "
+                        "and variant = 'centered' and status = 'present'"):
+                    if key and path:
+                        self._local[key.lower()] = path
+            except BaseException:   # psql 失败时会 SystemExit
+                pass
+        return self._local
+
+    def _local_splash(self, name: str):
+        idx = self._local_index()
+        # 库里的 champion_key 和对局里的 champion_name 大小写不一定一样（FiddleSticks / Fiddlesticks），按小写匹配
+        for k in dict.fromkeys([name.lower(), self.champ_key(name).lower()]):
+            p = idx.get(k)
+            if p:
+                try:
+                    return Image.open(p).convert("RGB")
+                except Exception:
+                    return None
+        return None
+
     def splash(self, name: str):
         """英雄默认原画（centered 版，1280×720，人物在画面中间），背景用。
-        地址不带版本号，缓存在 SPLASH_CACHE 下跨版本复用；下载失败记一个空标记，24 小时内不再重试，
+
+        先找 NAS 素材库（lol.asset_inventory，从游戏文件解出来的，永远是当前版本）；
+        库里没有再走 ddragon。ddragon 的文件名大小写和英雄 id 不一定一致，老英雄改版后
+        还可能留着老原画（比如草人），所以只当兜底。
+        ddragon 下载的缓存在 SPLASH_CACHE 下跨版本复用；下载失败记一个空标记，24 小时内不再重试，
         免得每张图都卡在超时上。拿不到返回 None。"""
         if not name:
             return None
+        local = self._local_splash(name)
+        if local is not None:
+            return local
         k = self.champ_key(name)
         SPLASH_CACHE.mkdir(parents=True, exist_ok=True)
         p, miss = SPLASH_CACHE / f"{k}_0.jpg", SPLASH_CACHE / f"{k}_0.miss"
         if not p.exists():
             if miss.exists() and time.time() - miss.stat().st_mtime < 86400:
                 return None
-            # 有的英雄没有 centered 版（比如草人 Fiddlesticks 返回 403），退到普通 splash 版
-            raw = (_get(f"{DD}/cdn/img/champion/centered/{k}_0.jpg", timeout=15)
-                   or _get(f"{DD}/cdn/img/champion/splash/{k}_0.jpg", timeout=15))
+            # ddragon 原画的文件名大小写不一定和英雄 id 一致：草人当前原画在 FiddleSticks_0.jpg，
+            # 而 Fiddlesticks_0.jpg 是改版前的老原画（centered 版 403，splash 版还留着老图）。
+            # 所以先用库里的原名，再用规范化后的 id；centered 优先，都没有才退到 splash 版
+            names = list(dict.fromkeys([name, k]))
+            raw = None
+            for kind in ("centered", "splash"):
+                for n in names:
+                    raw = _get(f"{DD}/cdn/img/champion/{kind}/{n}_0.jpg", timeout=15)
+                    if raw:
+                        break
+                if raw:
+                    break
             if not raw:
                 miss.touch()
                 return None
